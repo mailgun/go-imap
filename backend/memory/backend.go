@@ -54,3 +54,19 @@ func New() *Backend {
 		users: map[string]*User{user.username: user},
 	}
 }
+
+func (be *Backend) Push(mime string, t time.Time) {
+	msg := &Message{
+		Uid:   7,
+		Date:  t,
+		Flags: []string{"\\Seen"},
+		Size:  uint32(len(mime)),
+		Body:  []byte(mime),
+	}
+	be.users["username"].mailboxes["INBOX"].Messages = append(be.users["username"].mailboxes["INBOX"].Messages, msg)
+}
+
+func (be *Backend) Pop() {
+	count := len(be.users["username"].mailboxes["INBOX"].Messages)
+	be.users["username"].mailboxes["INBOX"].Messages = be.users["username"].mailboxes["INBOX"].Messages[:count-1]
+}
