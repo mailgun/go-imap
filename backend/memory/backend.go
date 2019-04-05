@@ -54,9 +54,9 @@ Hi there :)`
 	}
 }
 
-func (be *Backend) Push(mime string, t time.Time) {
+func (be *Backend) Push(mime string, t time.Time, uid uint32) {
 	msg := &Message{
-		Uid:   7,
+		Uid:   uid,
 		Date:  t,
 		Flags: []string{"\\Seen"},
 		Size:  uint32(len(mime)),
