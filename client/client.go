@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/commands"
-	"github.com/emersion/go-imap/responses"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/commands"
+	"github.com/mailgun/go-imap/responses"
 )
 
 // errClosed is used when a connection is closed while waiting for a command

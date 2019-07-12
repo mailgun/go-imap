@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/server"
+	"github.com/mailgun/go-imap/server"
 )
 
 func testServerAuthenticated(t *testing.T) (s *server.Server, c net.Conn, scanner *bufio.Scanner) {

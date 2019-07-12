@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/server"
+	"github.com/mailgun/go-imap/server"
 )
 
 func testServerSelected(t *testing.T, readOnly bool) (s *server.Server, c net.Conn, scanner *bufio.Scanner) {
