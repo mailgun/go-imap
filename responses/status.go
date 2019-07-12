@@ -3,8 +3,8 @@ package responses
 import (
 	"errors"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/utf7"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/utf7"
 )
 
 // A STATUS response.

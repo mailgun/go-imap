@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"time"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/backend/backendutil"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/backend/backendutil"
 	"github.com/emersion/go-message"
 )
 
