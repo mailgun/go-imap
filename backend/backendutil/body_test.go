@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap"
 	"github.com/emersion/go-message"
+	"github.com/mailgun/go-imap"
 )
 
 var bodyTests = []struct {

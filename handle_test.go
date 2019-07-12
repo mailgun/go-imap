@@ -3,7 +3,7 @@ package imap_test
 import (
 	"testing"
 
-	"github.com/emersion/go-imap"
+	"github.com/mailgun/go-imap"
 )
 
 func TestRespHandle_Accept(t *testing.T) {

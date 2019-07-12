@@ -3,9 +3,9 @@ package backendutil
 import (
 	"strings"
 
-	"github.com/emersion/go-imap"
 	"github.com/emersion/go-message"
 	"github.com/emersion/go-message/mail"
+	"github.com/mailgun/go-imap"
 )
 
 func headerAddressList(h mail.Header, key string) ([]*imap.Address, error) {

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/emersion/go-imap"
 	"github.com/emersion/go-message"
+	"github.com/mailgun/go-imap"
 )
 
 var errNoSuchPart = errors.New("backendutil: no such message body part")

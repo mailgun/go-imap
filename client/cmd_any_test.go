@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/emersion/go-imap/client"
+	"github.com/mailgun/go-imap/client"
 )
 
 func TestClient_Capability(t *testing.T) {

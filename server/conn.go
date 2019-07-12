@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/backend"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/backend"
 )
 
 // Conn is a connection to a client.

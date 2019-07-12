@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/client"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/client"
 )
 
 type ClientTester func(c *client.Client) error
