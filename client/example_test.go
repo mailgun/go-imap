@@ -24,7 +24,7 @@ func ExampleClient() {
 	defer c.Logout()
 
 	// Login
-	if err := c.Login("username", "password"); err != nil {
+	if _, err := c.Login("username", "password"); err != nil {
 		log.Fatal(err)
 	}
 	log.Println("Logged in")
@@ -188,7 +188,7 @@ func ExampleClient_StartTLS() {
 	log.Println("TLS started")
 
 	// Now we can login
-	if err := c.Login("username", "password"); err != nil {
+	if _, err := c.Login("username", "password"); err != nil {
 		log.Fatal(err)
 	}
 	log.Println("Logged in")

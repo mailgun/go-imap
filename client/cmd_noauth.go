@@ -3,12 +3,13 @@ package client
 import (
 	"crypto/tls"
 	"errors"
+	"log"
 	"net"
 
+	"github.com/emersion/go-sasl"
 	"github.com/mailgun/go-imap"
 	"github.com/mailgun/go-imap/commands"
 	"github.com/mailgun/go-imap/responses"
-	"github.com/emersion/go-sasl"
 )
 
 var (
@@ -116,16 +117,16 @@ func (c *Client) Authenticate(auth sasl.Client) error {
 
 // Login identifies the client to the server and carries the plaintext password
 // authenticating this user.
-func (c *Client) Login(username, password string) error {
+func (c *Client) Login(username, password string) (*imap.StatusResp, error) {
 	if c.State != imap.NotAuthenticatedState {
-		return ErrAlreadyLoggedIn
+		return nil, ErrAlreadyLoggedIn
 	}
 
 	c.capsLocker.Lock()
 	loginDisabled := c.caps != nil && c.caps["LOGINDISABLED"]
 	c.capsLocker.Unlock()
 	if loginDisabled {
-		return ErrLoginDisabled
+		return nil, ErrLoginDisabled
 	}
 
 	cmd := &commands.Login{
@@ -135,10 +136,13 @@ func (c *Client) Login(username, password string) error {
 
 	status, err := c.execute(cmd, nil)
 	if err != nil {
-		return err
+		return status, err
 	}
+
+	log.Printf("Type: (%s) Tag: (%s) Code: (%s) Info: (%s)", status.Type, status.Tag, status.Code, status.Info)
+
 	if err = status.Err(); err != nil {
-		return err
+		return status, err
 	}
 
 	c.State = imap.AuthenticatedState
@@ -150,5 +154,5 @@ func (c *Client) Login(username, password string) error {
 	if status.Code == "CAPABILITY" {
 		c.gotStatusCaps(status.Arguments)
 	}
-	return nil
+	return status, nil
 }
