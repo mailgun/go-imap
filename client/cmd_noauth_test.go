@@ -134,7 +134,7 @@ func TestClient_Authenticate(t *testing.T) {
 
 func TestClient_Login_Success(t *testing.T) {
 	ct := func(c *client.Client) (err error) {
-		err = c.Login("username", "password")
+		_, err = c.Login("username", "password")
 		if err != nil {
 			return
 		}
@@ -162,7 +162,7 @@ func TestClient_Login_Success(t *testing.T) {
 
 func TestClient_Login_Error(t *testing.T) {
 	ct := func(c *client.Client) error {
-		err := c.Login("username", "password")
+		_, err := c.Login("username", "password")
 		if err == nil {
 			return fmt.Errorf("Failed login didn't returned an error: %v", err)
 		}
