@@ -12,13 +12,13 @@ const (
 	// The OK response indicates an information message from the server.  When
 	// tagged, it indicates successful completion of the associated command.
 	// The untagged form indicates an information-only message.
-	StatusOk StatusRespType = "OK"
+	StatusRespOk StatusRespType = "OK"
 
 	// The NO response indicates an operational error message from the
 	// server.  When tagged, it indicates unsuccessful completion of the
 	// associated command.  The untagged form indicates a warning; the
 	// command can still complete successfully.
-	StatusNo = "NO"
+	StatusRespNo StatusRespType = "NO"
 
 	// The BAD response indicates an error message from the server.  When
 	// tagged, it reports a protocol-level error in the client's command;
@@ -26,32 +26,34 @@ const (
 	// form indicates a protocol-level error for which the associated
 	// command can not be determined; it can also indicate an internal
 	// server failure.
-	StatusBad = "BAD"
+	StatusRespBad StatusRespType = "BAD"
 
 	// The PREAUTH response is always untagged, and is one of three
 	// possible greetings at connection startup.  It indicates that the
 	// connection has already been authenticated by external means; thus
 	// no LOGIN command is needed.
-	StatusPreauth = "PREAUTH"
+	StatusRespPreauth StatusRespType = "PREAUTH"
 
 	// The BYE response is always untagged, and indicates that the server
 	// is about to close the connection.
-	StatusBye = "BYE"
+	StatusRespBye StatusRespType = "BYE"
 )
+
+type StatusRespCode string
 
 // Status response codes defined in RFC 3501 section 7.1.
 const (
-	CodeAlert          = "ALERT"
-	CodeBadCharset     = "BADCHARSET"
-	CodeCapability     = "CAPABILITY"
-	CodeParse          = "PARSE"
-	CodePermanentFlags = "PERMANENTFLAGS"
-	CodeReadOnly       = "READ-ONLY"
-	CodeReadWrite      = "READ-WRITE"
-	CodeTryCreate      = "TRYCREATE"
-	CodeUidNext        = "UIDNEXT"
-	CodeUidValidity    = "UIDVALIDITY"
-	CodeUnseen         = "UNSEEN"
+	CodeAlert          StatusRespCode = "ALERT"
+	CodeBadCharset     StatusRespCode = "BADCHARSET"
+	CodeCapability     StatusRespCode = "CAPABILITY"
+	CodeParse          StatusRespCode = "PARSE"
+	CodePermanentFlags StatusRespCode = "PERMANENTFLAGS"
+	CodeReadOnly       StatusRespCode = "READ-ONLY"
+	CodeReadWrite      StatusRespCode = "READ-WRITE"
+	CodeTryCreate      StatusRespCode = "TRYCREATE"
+	CodeUidNext        StatusRespCode = "UIDNEXT"
+	CodeUidValidity    StatusRespCode = "UIDVALIDITY"
+	CodeUnseen         StatusRespCode = "UNSEEN"
 )
 
 // A status response.
@@ -59,20 +61,18 @@ const (
 type StatusResp struct {
 	// The response tag. If empty, it defaults to *.
 	Tag string
-
 	// The status type.
 	Type StatusRespType
-
 	// The status code.
 	// See https://www.iana.org/assignments/imap-response-codes/imap-response-codes.xhtml
-	Code string
-
+	Code StatusRespCode
 	// Arguments provided with the status code.
 	Arguments []interface{}
-
 	// The status info.
 	Info string
 }
+
+func (r *StatusResp) resp() {}
 
 // If this status is NO or BAD, returns an error with the status info.
 // Otherwise, returns nil.
@@ -82,19 +82,19 @@ func (r *StatusResp) Err() error {
 		return errors.New("imap: connection closed during command execution")
 	}
 
-	if r.Type == StatusNo || r.Type == StatusBad {
+	if r.Type == StatusRespNo || r.Type == StatusRespBad {
 		return errors.New(r.Info)
 	}
 	return nil
 }
 
 func (r *StatusResp) WriteTo(w *Writer) error {
-	tag := r.Tag
+	tag := RawString(r.Tag)
 	if tag == "" {
 		tag = "*"
 	}
 
-	if err := w.writeFields([]interface{}{tag, string(r.Type)}); err != nil {
+	if err := w.writeFields([]interface{}{RawString(tag), RawString(r.Type)}); err != nil {
 		return err
 	}
 

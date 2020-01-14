@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/server"
+	"github.com/mailgun/go-imap/server"
 )
 
 func testServerSelected(t *testing.T, readOnly bool) (s *server.Server, c net.Conn, scanner *bufio.Scanner) {
@@ -27,10 +27,23 @@ func testServerSelected(t *testing.T, readOnly bool) (s *server.Server, c net.Co
 	return
 }
 
+func TestNoop_Selected(t *testing.T) {
+	s, c, scanner := testServerSelected(t, false)
+	defer s.Close()
+	defer c.Close()
+
+	io.WriteString(c, "a001 NOOP\r\n")
+
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "a001 OK ") {
+		t.Fatal("Bad status response:", scanner.Text())
+	}
+}
+
 func TestCheck(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 CHECK\r\n")
 
@@ -42,8 +55,8 @@ func TestCheck(t *testing.T) {
 
 func TestCheck_ReadOnly(t *testing.T) {
 	s, c, scanner := testServerSelected(t, true)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 CHECK\r\n")
 
@@ -55,8 +68,8 @@ func TestCheck_ReadOnly(t *testing.T) {
 
 func TestCheck_NotSelected(t *testing.T) {
 	s, c, scanner := testServerAuthenticated(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 CHECK\r\n")
 
@@ -68,8 +81,8 @@ func TestCheck_NotSelected(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 CLOSE\r\n")
 
@@ -81,8 +94,8 @@ func TestClose(t *testing.T) {
 
 func TestClose_NotSelected(t *testing.T) {
 	s, c, scanner := testServerAuthenticated(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 CLOSE\r\n")
 
@@ -94,8 +107,8 @@ func TestClose_NotSelected(t *testing.T) {
 
 func TestExpunge(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 EXPUNGE\r\n")
 
@@ -126,8 +139,8 @@ func TestExpunge(t *testing.T) {
 
 func TestExpunge_ReadOnly(t *testing.T) {
 	s, c, scanner := testServerSelected(t, true)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 EXPUNGE\r\n")
 
@@ -139,8 +152,8 @@ func TestExpunge_ReadOnly(t *testing.T) {
 
 func TestExpunge_NotSelected(t *testing.T) {
 	s, c, scanner := testServerAuthenticated(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 EXPUNGE\r\n")
 
@@ -152,8 +165,8 @@ func TestExpunge_NotSelected(t *testing.T) {
 
 func TestSearch(t *testing.T) {
 	s, c, scanner := testServerSelected(t, true)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 SEARCH UNDELETED\r\n")
 	scanner.Scan()
@@ -178,8 +191,8 @@ func TestSearch(t *testing.T) {
 
 func TestSearch_NotSelected(t *testing.T) {
 	s, c, scanner := testServerAuthenticated(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 SEARCH UNDELETED\r\n")
 	scanner.Scan()
@@ -190,8 +203,8 @@ func TestSearch_NotSelected(t *testing.T) {
 
 func TestSearch_Uid(t *testing.T) {
 	s, c, scanner := testServerSelected(t, true)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 UID SEARCH UNDELETED\r\n")
 	scanner.Scan()
@@ -206,8 +219,8 @@ func TestSearch_Uid(t *testing.T) {
 
 func TestFetch(t *testing.T) {
 	s, c, scanner := testServerSelected(t, true)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 FETCH 1 (UID FLAGS)\r\n")
 	scanner.Scan()
@@ -234,10 +247,22 @@ func TestFetch(t *testing.T) {
 	}
 }
 
+func TestFetch_NotSelected(t *testing.T) {
+	s, c, scanner := testServerAuthenticated(t)
+	defer s.Close()
+	defer c.Close()
+
+	io.WriteString(c, "a001 FETCH 1 (UID FLAGS)\r\n")
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "a001 NO ") {
+		t.Fatal("Invalid status response:", scanner.Text())
+	}
+}
+
 func TestFetch_Uid(t *testing.T) {
 	s, c, scanner := testServerSelected(t, true)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 UID FETCH 6 (UID)\r\n")
 	scanner.Scan()
@@ -252,8 +277,8 @@ func TestFetch_Uid(t *testing.T) {
 
 func TestFetch_Uid_UidNotRequested(t *testing.T) {
 	s, c, scanner := testServerSelected(t, true)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 UID FETCH 6 (FLAGS)\r\n")
 	scanner.Scan()
@@ -268,8 +293,8 @@ func TestFetch_Uid_UidNotRequested(t *testing.T) {
 
 func TestStore(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 STORE 1 +FLAGS (\\Flagged)\r\n")
 
@@ -317,8 +342,8 @@ func TestStore(t *testing.T) {
 
 func TestStore_NotSelected(t *testing.T) {
 	s, c, scanner := testServerAuthenticated(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 STORE 1 +FLAGS (\\Flagged)\r\n")
 	scanner.Scan()
@@ -329,8 +354,8 @@ func TestStore_NotSelected(t *testing.T) {
 
 func TestStore_ReadOnly(t *testing.T) {
 	s, c, scanner := testServerSelected(t, true)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 STORE 1 +FLAGS (\\Flagged)\r\n")
 	scanner.Scan()
@@ -341,8 +366,8 @@ func TestStore_ReadOnly(t *testing.T) {
 
 func TestStore_InvalidOperation(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 STORE 1 IDONTEXIST (\\Flagged)\r\n")
 	scanner.Scan()
@@ -353,14 +378,8 @@ func TestStore_InvalidOperation(t *testing.T) {
 
 func TestStore_InvalidFlags(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
-	defer c.Close()
 	defer s.Close()
-
-	io.WriteString(c, "a001 STORE 1 +FLAGS somestring\r\n")
-	scanner.Scan()
-	if !strings.HasPrefix(scanner.Text(), "a001 NO ") {
-		t.Fatal("Invalid status response:", scanner.Text())
-	}
+	defer c.Close()
 
 	io.WriteString(c, "a001 STORE 1 +FLAGS ((nested)(lists))\r\n")
 	scanner.Scan()
@@ -369,10 +388,105 @@ func TestStore_InvalidFlags(t *testing.T) {
 	}
 }
 
-func TestStore_Uid(t *testing.T) {
+func TestStore_SingleFlagNonList(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
 	defer c.Close()
 	defer s.Close()
+
+	io.WriteString(c, "a001 STORE 1 FLAGS somestring\r\n")
+
+	gotOK := false
+	gotFetch := false
+	for scanner.Scan() {
+		res := scanner.Text()
+
+		if res == "* 1 FETCH (FLAGS (somestring))" {
+			gotFetch = true
+		} else if strings.HasPrefix(res, "a001 OK ") {
+			gotOK = true
+			break
+		} else {
+			t.Fatal("Unexpected response:", res)
+		}
+	}
+
+	if !gotFetch {
+		t.Fatal("Missing FETCH response.")
+	}
+
+	if !gotOK {
+		t.Fatal("Missing status response.")
+	}
+}
+
+func TestStore_NonList(t *testing.T) {
+	s, c, scanner := testServerSelected(t, false)
+	defer c.Close()
+	defer s.Close()
+
+	io.WriteString(c, "a001 STORE 1 FLAGS somestring someanotherstring\r\n")
+
+	scanner.Scan()
+	if scanner.Text() != "* 1 FETCH (FLAGS (somestring someanotherstring))" {
+		t.Fatal("Invalid FETCH response:", scanner.Text())
+	}
+
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "a001 OK ") {
+		t.Fatal("Invalid status response:", scanner.Text())
+	}
+}
+
+func TestStore_RecentFlag(t *testing.T) {
+	s, c, scanner := testServerSelected(t, false)
+	defer c.Close()
+	defer s.Close()
+
+	// Add Recent flag
+	io.WriteString(c, "a001 STORE 1 FLAGS \\Recent\r\n")
+
+	scanner.Scan()
+	if scanner.Text() != "* 1 FETCH (FLAGS (\\Recent))" {
+		t.Fatal("Invalid FETCH response:", scanner.Text())
+	}
+
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "a001 OK ") {
+		t.Fatal("Invalid status response:", scanner.Text())
+	}
+
+	// Set flags to: something
+	// Should still get Recent flag back
+	io.WriteString(c, "a001 STORE 1 FLAGS something\r\n")
+
+	scanner.Scan()
+	if scanner.Text() != "* 1 FETCH (FLAGS (\\Recent something))" {
+		t.Fatal("Invalid FETCH response:", scanner.Text())
+	}
+
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "a001 OK ") {
+		t.Fatal("Invalid status response:", scanner.Text())
+	}
+
+	// Try adding Recent flag again
+	io.WriteString(c, "a001 STORE 1 FLAGS \\Recent anotherflag\r\n")
+
+	scanner.Scan()
+	if scanner.Text() != "* 1 FETCH (FLAGS (\\Recent anotherflag))" {
+		t.Fatal("Invalid FETCH response:", scanner.Text())
+	}
+
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "a001 OK ") {
+		t.Fatal("Invalid status response:", scanner.Text())
+	}
+}
+
+func TestStore_Uid(t *testing.T) {
+	s, c, scanner := testServerSelected(t, false)
+	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 UID STORE 6 +FLAGS (\\Flagged)\r\n")
 
@@ -389,8 +503,8 @@ func TestStore_Uid(t *testing.T) {
 
 func TestCopy(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 CREATE CopyDest\r\n")
 	scanner.Scan()
@@ -406,7 +520,7 @@ func TestCopy(t *testing.T) {
 
 	io.WriteString(c, "a001 STATUS CopyDest (MESSAGES)\r\n")
 	scanner.Scan()
-	if !strings.HasPrefix(scanner.Text(), "* STATUS CopyDest (MESSAGES 1)") {
+	if !strings.HasPrefix(scanner.Text(), "* STATUS \"CopyDest\" (MESSAGES 1)") {
 		t.Fatal("Invalid status response:", scanner.Text())
 	}
 	scanner.Scan()
@@ -417,8 +531,8 @@ func TestCopy(t *testing.T) {
 
 func TestCopy_NotSelected(t *testing.T) {
 	s, c, scanner := testServerAuthenticated(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 CREATE CopyDest\r\n")
 	scanner.Scan()
@@ -435,8 +549,8 @@ func TestCopy_NotSelected(t *testing.T) {
 
 func TestCopy_Uid(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 CREATE CopyDest\r\n")
 	scanner.Scan()
@@ -453,8 +567,8 @@ func TestCopy_Uid(t *testing.T) {
 
 func TestUid_InvalidCommand(t *testing.T) {
 	s, c, scanner := testServerSelected(t, false)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 UID IDONTEXIST\r\n")
 	scanner.Scan()

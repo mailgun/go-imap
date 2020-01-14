@@ -6,12 +6,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/emersion/go-imap"
+	"github.com/mailgun/go-imap"
 	"github.com/emersion/go-message"
 )
 
+var testInternalDate = time.Unix(1483997966, 0)
+
 var matchTests = []struct {
 	criteria *imap.SearchCriteria
+	seqNum   uint32
+	uid      uint32
+	date     time.Time
+	flags    []string
 	res      bool
 }{
 	{
@@ -77,7 +83,7 @@ var matchTests = []struct {
 	},
 	{
 		criteria: &imap.SearchCriteria{
-			Header: textproto.MIMEHeader{"Reply-To": {""}},
+			Header: textproto.MIMEHeader{"Totally-Not-Reply-To": {""}},
 		},
 		res: false,
 	},
@@ -105,34 +111,6 @@ var matchTests = []struct {
 		},
 		res: false,
 	},
-}
-
-func TestMatch(t *testing.T) {
-	for i, test := range matchTests {
-		e, err := message.Read(strings.NewReader(testMailString))
-		if err != nil {
-			t.Fatal("Expected no error while reading entity, got:", err)
-		}
-
-		ok, err := Match(e, test.criteria)
-		if err != nil {
-			t.Fatal("Expected no error while matching entity, got:", err)
-		}
-
-		if test.res && !ok {
-			t.Errorf("Expected #%v to match search criteria", i+1)
-		}
-		if !test.res && ok {
-			t.Errorf("Expected #%v not to match search criteria", i+1)
-		}
-	}
-}
-
-var flagsTests = []struct {
-	flags    []string
-	criteria *imap.SearchCriteria
-	res      bool
-}{
 	{
 		flags: []string{imap.SeenFlag},
 		criteria: &imap.SearchCriteria{
@@ -176,11 +154,156 @@ var flagsTests = []struct {
 		},
 		res: false,
 	},
+	{
+		seqNum: 42,
+		uid:    69,
+		criteria: &imap.SearchCriteria{
+			Or: [][2]*imap.SearchCriteria{{
+				{
+					Uid: new(imap.SeqSet),
+					Not: []*imap.SearchCriteria{{SeqNum: new(imap.SeqSet)}},
+				},
+				{
+					SeqNum: new(imap.SeqSet),
+				},
+			}},
+		},
+		res: false,
+	},
+	{
+		seqNum: 42,
+		uid:    69,
+		criteria: &imap.SearchCriteria{
+			Or: [][2]*imap.SearchCriteria{{
+				{
+					Uid: &imap.SeqSet{Set: []imap.Seq{{69, 69}}},
+					Not: []*imap.SearchCriteria{{SeqNum: new(imap.SeqSet)}},
+				},
+				{
+					SeqNum: new(imap.SeqSet),
+				},
+			}},
+		},
+		res: true,
+	},
+	{
+		seqNum: 42,
+		uid:    69,
+		criteria: &imap.SearchCriteria{
+			Or: [][2]*imap.SearchCriteria{{
+				{
+					Uid: &imap.SeqSet{Set: []imap.Seq{{69, 69}}},
+					Not: []*imap.SearchCriteria{{
+						SeqNum: &imap.SeqSet{Set: []imap.Seq{imap.Seq{42, 42}}},
+					}},
+				},
+				{
+					SeqNum: new(imap.SeqSet),
+				},
+			}},
+		},
+		res: false,
+	},
+	{
+		seqNum: 42,
+		uid:    69,
+		criteria: &imap.SearchCriteria{
+			Or: [][2]*imap.SearchCriteria{{
+				{
+					Uid: &imap.SeqSet{Set: []imap.Seq{{69, 69}}},
+					Not: []*imap.SearchCriteria{{
+						SeqNum: &imap.SeqSet{Set: []imap.Seq{{42, 42}}},
+					}},
+				},
+				{
+					SeqNum: &imap.SeqSet{Set: []imap.Seq{{42, 42}}},
+				},
+			}},
+		},
+		res: true,
+	},
+	{
+		date: testInternalDate,
+		criteria: &imap.SearchCriteria{
+			Or: [][2]*imap.SearchCriteria{{
+				{
+					Since: testInternalDate.Add(48 * time.Hour),
+					Not: []*imap.SearchCriteria{{
+						Since: testInternalDate.Add(48 * time.Hour),
+					}},
+				},
+				{
+					Before: testInternalDate.Add(-48 * time.Hour),
+				},
+			}},
+		},
+		res: false,
+	},
+	{
+		date: testInternalDate,
+		criteria: &imap.SearchCriteria{
+			Or: [][2]*imap.SearchCriteria{{
+				{
+					Since: testInternalDate.Add(-48 * time.Hour),
+					Not: []*imap.SearchCriteria{{
+						Since: testInternalDate.Add(48 * time.Hour),
+					}},
+				},
+				{
+					Before: testInternalDate.Add(-48 * time.Hour),
+				},
+			}},
+		},
+		res: true,
+	},
+	{
+		date: testInternalDate,
+		criteria: &imap.SearchCriteria{
+			Or: [][2]*imap.SearchCriteria{{
+				{
+					Since: testInternalDate.Add(-48 * time.Hour),
+					Not: []*imap.SearchCriteria{{
+						Since: testInternalDate.Add(-48 * time.Hour),
+					}},
+				},
+				{
+					Before: testInternalDate.Add(-48 * time.Hour),
+				},
+			}},
+		},
+		res: false,
+	},
+	{
+		date: testInternalDate,
+		criteria: &imap.SearchCriteria{
+			Or: [][2]*imap.SearchCriteria{{
+				{
+					Since: testInternalDate.Add(-48 * time.Hour),
+					Not: []*imap.SearchCriteria{{
+						Since: testInternalDate.Add(-48 * time.Hour),
+					}},
+				},
+				{
+					Before: testInternalDate.Add(48 * time.Hour),
+				},
+			}},
+		},
+		res: true,
+	},
 }
 
-func TestMatchFlags(t *testing.T) {
-	for i, test := range flagsTests {
-		ok := MatchFlags(test.flags, test.criteria)
+func TestMatch(t *testing.T) {
+	for i, test := range matchTests {
+		e, err := message.Read(strings.NewReader(testMailString))
+		if err != nil {
+			t.Fatal("Expected no error while reading entity, got:", err)
+		}
+
+		ok, err := Match(e, test.seqNum, test.uid, test.date, test.flags, test.criteria)
+		if err != nil {
+			t.Fatal("Expected no error while matching entity, got:", err)
+		}
+
 		if test.res && !ok {
 			t.Errorf("Expected #%v to match search criteria", i+1)
 		}
@@ -190,75 +313,120 @@ func TestMatchFlags(t *testing.T) {
 	}
 }
 
-func TestMatchSeqNumAndUid(t *testing.T) {
-	seqNum := uint32(42)
-	uid := uint32(69)
+func TestMatchEncoded(t *testing.T) {
+	encodedTestMsg := `From: "fox.cpp" <foxcpp@foxcpp.dev>
+To: "fox.cpp" <foxcpp@foxcpp.dev>
+Subject: =?utf-8?B?0J/RgNC+0LLQtdGA0LrQsCE=?=
+Date: Sun, 09 Jun 2019 00:06:43 +0300
+MIME-Version: 1.0
+Message-ID: <a2aeb99e-52dd-40d3-b99f-1fdaad77ed98@foxcpp.dev>
+Content-Type: text/plain; charset=utf-8; format=flowed
+Content-Transfer-Encoding: quoted-printable
 
-	c := &imap.SearchCriteria{
-		Or: [][2]*imap.SearchCriteria{{
-			{
-				Uid: new(imap.SeqSet),
-				Not: []*imap.SearchCriteria{{SeqNum: new(imap.SeqSet)}},
-			},
-			{
-				SeqNum: new(imap.SeqSet),
-			},
-		}},
+=D0=AD=D1=82=D0=BE=D1=82 =D1=82=D0=B5=D0=BA=D1=81=D1=82 =D0=B4=D0=BE=D0=BB=
+=D0=B6=D0=B5=D0=BD =D0=B1=D1=8B=D1=82=D1=8C =D0=B7=D0=B0=D0=BA=D0=BE=D0=B4=
+=D0=B8=D1=80=D0=BE=D0=B2=D0=B0=D0=BD =D0=B2 base64 =D0=B8=D0=BB=D0=B8 quote=
+d-encoding.`
+	e, err := message.Read(strings.NewReader(encodedTestMsg))
+	if err != nil {
+		t.Fatal("Expected no error while reading entity, got:", err)
 	}
 
-	if MatchSeqNumAndUid(seqNum, uid, c) {
-		t.Error("Expected not to match criteria")
+	// Check encoded header.
+	crit := imap.SearchCriteria{
+		Header: textproto.MIMEHeader{"Subject": []string{"Проверка!"}},
 	}
 
-	c.Or[0][0].Uid.AddNum(uid)
-	if !MatchSeqNumAndUid(seqNum, uid, c) {
-		t.Error("Expected to match criteria")
+	ok, err := Match(e, 0, 0, time.Now(), []string{}, &crit)
+	if err != nil {
+		t.Fatal("Expected no error while matching entity, got:", err)
 	}
 
-	c.Or[0][0].Not[0].SeqNum.AddNum(seqNum)
-	if MatchSeqNumAndUid(seqNum, uid, c) {
-		t.Error("Expected not to match criteria")
+	if !ok {
+		t.Error("Expected match for encoded header")
 	}
 
-	c.Or[0][1].SeqNum.AddNum(seqNum)
-	if !MatchSeqNumAndUid(seqNum, uid, c) {
-		t.Error("Expected to match criteria")
+	// Encoded body.
+	crit = imap.SearchCriteria{
+		Body: []string{"или"},
+	}
+
+	ok, err = Match(e, 0, 0, time.Now(), []string{}, &crit)
+	if err != nil {
+		t.Fatal("Expected no error while matching entity, got:", err)
+	}
+
+	if !ok {
+		t.Error("Expected match for encoded body")
 	}
 }
 
-func TestMatchDate(t *testing.T) {
-	date := time.Unix(1483997966, 0)
-
-	c := &imap.SearchCriteria{
-		Or: [][2]*imap.SearchCriteria{{
-			{
-				Since: date.Add(48 * time.Hour),
-				Not: []*imap.SearchCriteria{{
-					Since: date.Add(48 * time.Hour),
-				}},
-			},
-			{
-				Before: date.Add(-48 * time.Hour),
-			},
-		}},
+func TestMatchIssue298Regression(t *testing.T) {
+	raw1 := "Subject: 1\r\n\r\n1"
+	raw2 := "Subject: 2\r\n\r\n22"
+	raw3 := "Subject: 3\r\n\r\n333"
+	e1, err := message.Read(strings.NewReader(raw1))
+	if err != nil {
+		t.Fatal("Expected no error while reading entity, got:", err)
+	}
+	e2, err := message.Read(strings.NewReader(raw2))
+	if err != nil {
+		t.Fatal("Expected no error while reading entity, got:", err)
+	}
+	e3, err := message.Read(strings.NewReader(raw3))
+	if err != nil {
+		t.Fatal("Expected no error while reading entity, got:", err)
 	}
 
-	if MatchDate(date, c) {
-		t.Error("Expected not to match criteria")
+	// Search for body size > 1 ("LARGER 1"), which should match messages #2 and #3
+	criteria := &imap.SearchCriteria{
+		Larger: 1,
+	}
+	ok1, err := Match(e1, 1, 101, time.Now(), nil, criteria)
+	if err != nil {
+		t.Fatal("Expected no error while matching entity, got:", err)
+	}
+	if ok1 {
+		t.Errorf("Expected message #1 to not match search criteria")
+	}
+	ok2, err := Match(e2, 2, 102, time.Now(), nil, criteria)
+	if err != nil {
+		t.Fatal("Expected no error while matching entity, got:", err)
+	}
+	if !ok2 {
+		t.Errorf("Expected message #2 to match search criteria")
+	}
+	ok3, err := Match(e3, 3, 103, time.Now(), nil, criteria)
+	if err != nil {
+		t.Fatal("Expected no error while matching entity, got:", err)
+	}
+	if !ok3 {
+		t.Errorf("Expected message #3 to match search criteria")
 	}
 
-	c.Or[0][0].Since = date.Add(-48 * time.Hour)
-	if !MatchDate(date, c) {
-		t.Error("Expected to match criteria")
+	// Search for body size < 3 ("SMALLER 3"), which should match messages #1 and #2
+	criteria = &imap.SearchCriteria{
+		Smaller: 3,
 	}
-
-	c.Or[0][0].Not[0].Since = date.Add(-48 * time.Hour)
-	if MatchDate(date, c) {
-		t.Error("Expected not to match criteria")
+	ok1, err = Match(e1, 1, 101, time.Now(), nil, criteria)
+	if err != nil {
+		t.Fatal("Expected no error while matching entity, got:", err)
 	}
-
-	c.Or[0][1].Before = date.Add(48 * time.Hour)
-	if !MatchDate(date, c) {
-		t.Error("Expected to match criteria")
+	if !ok1 {
+		t.Errorf("Expected message #1 to match search criteria")
+	}
+	ok2, err = Match(e2, 2, 102, time.Now(), nil, criteria)
+	if err != nil {
+		t.Fatal("Expected no error while matching entity, got:", err)
+	}
+	if !ok2 {
+		t.Errorf("Expected message #2 to match search criteria")
+	}
+	ok3, err = Match(e3, 3, 103, time.Now(), nil, criteria)
+	if err != nil {
+		t.Fatal("Expected no error while matching entity, got:", err)
+	}
+	if ok3 {
+		t.Errorf("Expected message #3 to not match search criteria")
 	}
 }

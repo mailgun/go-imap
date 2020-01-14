@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/textproto"
 	"strings"
 	"time"
@@ -43,8 +42,8 @@ func convertField(f interface{}, charsetReader func(io.Reader) io.Reader) string
 		}
 	}
 
-	b, err := ioutil.ReadAll(r)
-	if err != nil {
+	b := make([]byte, l.Len())
+	if _, err := io.ReadFull(r, b); err != nil {
 		return ""
 	}
 	return string(b)
@@ -238,7 +237,7 @@ func (c *SearchCriteria) parseField(fields []interface{}, charsetReader func(io.
 	case "UID":
 		if f, fields, err = popSearchField(fields); err != nil {
 			return nil, err
-		} else if c.Uid, err = NewSeqSet(maybeString(f)); err != nil {
+		} else if c.Uid, err = ParseSeqSet(maybeString(f)); err != nil {
 			return nil, err
 		}
 	case "UNANSWERED", "UNDELETED", "UNDRAFT", "UNFLAGGED", "UNSEEN":
@@ -251,7 +250,7 @@ func (c *SearchCriteria) parseField(fields []interface{}, charsetReader func(io.
 			c.WithoutFlags = append(c.WithoutFlags, CanonicalFlag(maybeString(f)))
 		}
 	default: // Try to parse a sequence set
-		if c.SeqNum, err = NewSeqSet(key); err != nil {
+		if c.SeqNum, err = ParseSeqSet(key); err != nil {
 			return nil, err
 		}
 	}
@@ -280,27 +279,27 @@ func (c *SearchCriteria) Format() []interface{} {
 		fields = append(fields, c.SeqNum)
 	}
 	if c.Uid != nil {
-		fields = append(fields, "UID", c.Uid)
+		fields = append(fields, RawString("UID"), c.Uid)
 	}
 
 	if !c.Since.IsZero() && !c.Before.IsZero() && c.Before.Sub(c.Since) == 24*time.Hour {
-		fields = append(fields, "ON", searchDate(c.Since))
+		fields = append(fields, RawString("ON"), searchDate(c.Since))
 	} else {
 		if !c.Since.IsZero() {
-			fields = append(fields, "SINCE", searchDate(c.Since))
+			fields = append(fields, RawString("SINCE"), searchDate(c.Since))
 		}
 		if !c.Before.IsZero() {
-			fields = append(fields, "BEFORE", searchDate(c.Before))
+			fields = append(fields, RawString("BEFORE"), searchDate(c.Before))
 		}
 	}
 	if !c.SentSince.IsZero() && !c.SentBefore.IsZero() && c.SentBefore.Sub(c.SentSince) == 24*time.Hour {
-		fields = append(fields, "SENTON", searchDate(c.SentSince))
+		fields = append(fields, RawString("SENTON"), searchDate(c.SentSince))
 	} else {
 		if !c.SentSince.IsZero() {
-			fields = append(fields, "SENTSINCE", searchDate(c.SentSince))
+			fields = append(fields, RawString("SENTSINCE"), searchDate(c.SentSince))
 		}
 		if !c.SentBefore.IsZero() {
-			fields = append(fields, "SENTBEFORE", searchDate(c.SentBefore))
+			fields = append(fields, RawString("SENTBEFORE"), searchDate(c.SentBefore))
 		}
 	}
 
@@ -308,9 +307,9 @@ func (c *SearchCriteria) Format() []interface{} {
 		var prefields []interface{}
 		switch key {
 		case "Bcc", "Cc", "From", "Subject", "To":
-			prefields = []interface{}{strings.ToUpper(key)}
+			prefields = []interface{}{RawString(strings.ToUpper(key))}
 		default:
-			prefields = []interface{}{"HEADER", key}
+			prefields = []interface{}{RawString("HEADER"), key}
 		}
 		for _, value := range values {
 			fields = append(fields, prefields...)
@@ -319,19 +318,19 @@ func (c *SearchCriteria) Format() []interface{} {
 	}
 
 	for _, value := range c.Body {
-		fields = append(fields, "BODY", value)
+		fields = append(fields, RawString("BODY"), value)
 	}
 	for _, value := range c.Text {
-		fields = append(fields, "TEXT", value)
+		fields = append(fields, RawString("TEXT"), value)
 	}
 
 	for _, flag := range c.WithFlags {
 		var subfields []interface{}
 		switch flag {
 		case AnsweredFlag, DeletedFlag, DraftFlag, FlaggedFlag, RecentFlag, SeenFlag:
-			subfields = []interface{}{strings.ToUpper(strings.TrimPrefix(flag, "\\"))}
+			subfields = []interface{}{RawString(strings.ToUpper(strings.TrimPrefix(flag, "\\")))}
 		default:
-			subfields = []interface{}{"KEYWORD", flag}
+			subfields = []interface{}{RawString("KEYWORD"), RawString(flag)}
 		}
 		fields = append(fields, subfields...)
 	}
@@ -339,28 +338,33 @@ func (c *SearchCriteria) Format() []interface{} {
 		var subfields []interface{}
 		switch flag {
 		case AnsweredFlag, DeletedFlag, DraftFlag, FlaggedFlag, SeenFlag:
-			subfields = []interface{}{"UN" + strings.ToUpper(strings.TrimPrefix(flag, "\\"))}
+			subfields = []interface{}{RawString("UN" + strings.ToUpper(strings.TrimPrefix(flag, "\\")))}
 		case RecentFlag:
-			subfields = []interface{}{"OLD"}
+			subfields = []interface{}{RawString("OLD")}
 		default:
-			subfields = []interface{}{"UNKEYWORD", flag}
+			subfields = []interface{}{RawString("UNKEYWORD"), RawString(flag)}
 		}
 		fields = append(fields, subfields...)
 	}
 
 	if c.Larger > 0 {
-		fields = append(fields, "LARGER", c.Larger)
+		fields = append(fields, RawString("LARGER"), c.Larger)
 	}
 	if c.Smaller > 0 {
-		fields = append(fields, "SMALLER", c.Smaller)
+		fields = append(fields, RawString("SMALLER"), c.Smaller)
 	}
 
 	for _, not := range c.Not {
-		fields = append(fields, "NOT", not.Format())
+		fields = append(fields, RawString("NOT"), not.Format())
 	}
 
 	for _, or := range c.Or {
-		fields = append(fields, "OR", or[0].Format(), or[1].Format())
+		fields = append(fields, RawString("OR"), or[0].Format(), or[1].Format())
+	}
+
+	// Not a single criteria given, add ALL criteria as fallback
+	if len(fields) == 0 {
+		fields = append(fields, RawString("ALL"))
 	}
 
 	return fields

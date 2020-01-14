@@ -2,11 +2,10 @@ package server
 
 import (
 	"errors"
-	"strings"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/commands"
-	"github.com/emersion/go-imap/responses"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/commands"
+	"github.com/mailgun/go-imap/responses"
 )
 
 // imap errors in Selected state.
@@ -53,12 +52,8 @@ func (cmd *Close) Handle(conn Conn) error {
 	ctx.Mailbox = nil
 	ctx.MailboxReadOnly = false
 
-	if err := mailbox.Expunge(); err != nil {
-		return err
-	}
-
 	// No need to send expunge updates here, since the mailbox is already unselected
-	return nil
+	return mailbox.Expunge()
 }
 
 type Expunge struct {
@@ -95,20 +90,26 @@ func (cmd *Expunge) Handle(conn Conn) error {
 
 	// If the backend doesn't support expunge updates, let's do it ourselves
 	if conn.Server().Updates == nil {
-		done := make(chan error)
-		defer close(done)
+		done := make(chan error, 1)
 
 		ch := make(chan uint32)
 		res := &responses.Expunge{SeqNums: ch}
 
 		go (func() {
 			done <- conn.WriteResp(res)
+			// Don't need to drain 'ch', sender will stop sending when error written to 'done.
 		})()
 
 		// Iterate sequence numbers from the last one to the first one, as deleting
 		// messages changes their respective numbers
 		for i := len(seqnums) - 1; i >= 0; i-- {
-			ch <- seqnums[i]
+			// Send sequence numbers to channel, and check if conn.WriteResp() finished early.
+			select {
+			case ch <- seqnums[i]: // Send next seq. number
+			case err := <-done: // Check for errors
+				close(ch)
+				return err
+			}
 		}
 		close(ch)
 
@@ -163,6 +164,9 @@ func (cmd *Fetch) handle(uid bool, conn Conn) error {
 	done := make(chan error, 1)
 	go (func() {
 		done <- conn.WriteResp(res)
+		// Make sure to drain the message channel.
+		for _ = range ch {
+		}
 	})()
 
 	err := ctx.Mailbox.ListMessages(uid, cmd.SeqSet, cmd.Items, ch)
@@ -206,24 +210,28 @@ func (cmd *Store) handle(uid bool, conn Conn) error {
 		return ErrMailboxReadOnly
 	}
 
-	itemStr := cmd.Item
-	silent := strings.HasSuffix(itemStr, imap.SilentOp)
-	if silent {
-		itemStr = strings.TrimSuffix(itemStr, imap.SilentOp)
-	}
-	item := imap.FlagsOp(itemStr)
-
-	if item != imap.SetFlags && item != imap.AddFlags && item != imap.RemoveFlags {
-		return errors.New("Unsupported STORE operation")
-	}
-
-	flagsList, ok := cmd.Value.([]interface{})
-	if !ok {
-		return errors.New("Flags must be a list")
-	}
-	flags, err := imap.ParseStringList(flagsList)
+	// Only flags operations are supported
+	op, silent, err := imap.ParseFlagsOp(cmd.Item)
 	if err != nil {
 		return err
+	}
+
+	var flags []string
+
+	if flagsList, ok := cmd.Value.([]interface{}); ok {
+		// Parse list of flags
+		if strs, err := imap.ParseStringList(flagsList); err == nil {
+			flags = strs
+		} else {
+			return err
+		}
+	} else {
+		// Parse single flag
+		if str, err := imap.ParseString(cmd.Value); err == nil {
+			flags = []string{str}
+		} else {
+			return err
+		}
 	}
 	for i, flag := range flags {
 		flags[i] = imap.CanonicalFlag(flag)
@@ -233,7 +241,7 @@ func (cmd *Store) handle(uid bool, conn Conn) error {
 	// from receiving them
 	// TODO: find a better way to do this, without conn.silent
 	*conn.silent() = silent
-	err = ctx.Mailbox.UpdateMessagesFlags(uid, cmd.SeqSet, item, flags)
+	err = ctx.Mailbox.UpdateMessagesFlags(uid, cmd.SeqSet, op, flags)
 	*conn.silent() = false
 	if err != nil {
 		return err
@@ -244,7 +252,7 @@ func (cmd *Store) handle(uid bool, conn Conn) error {
 	if conn.Server().Updates == nil && !silent {
 		inner := &Fetch{}
 		inner.SeqSet = cmd.SeqSet
-		inner.Items = []string{"FLAGS"}
+		inner.Items = []imap.FetchItem{imap.FetchFlags}
 		if uid {
 			inner.Items = append(inner.Items, "UID")
 		}
@@ -307,7 +315,7 @@ func (cmd *Uid) Handle(conn Conn) error {
 	}
 
 	return ErrStatusResp(&imap.StatusResp{
-		Type: imap.StatusOk,
-		Info: imap.Uid + " " + inner.Name + " completed",
+		Type: imap.StatusRespOk,
+		Info: "UID " + inner.Name + " completed",
 	})
 }

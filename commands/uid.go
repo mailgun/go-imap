@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/emersion/go-imap"
+	"github.com/mailgun/go-imap"
 )
 
 // Uid is a UID command, as defined in RFC 3501 section 6.4.8. It wraps another
@@ -16,11 +16,11 @@ type Uid struct {
 func (cmd *Uid) Command() *imap.Command {
 	inner := cmd.Cmd.Command()
 
-	args := []interface{}{inner.Name}
+	args := []interface{}{imap.RawString(inner.Name)}
 	args = append(args, inner.Arguments...)
 
 	return &imap.Command{
-		Name:      imap.Uid,
+		Name:      "UID",
 		Arguments: args,
 	}
 }

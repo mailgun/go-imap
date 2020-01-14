@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/server"
+	"github.com/mailgun/go-imap/server"
 	"github.com/emersion/go-sasl"
 )
 
@@ -21,13 +21,13 @@ func testServerGreeted(t *testing.T) (s *server.Server, c net.Conn, scanner *buf
 
 func TestCapability(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 CAPABILITY\r\n")
 
 	scanner.Scan()
-	if scanner.Text() != "* CAPABILITY IMAP4rev1 AUTH=PLAIN" {
+	if scanner.Text() != "* CAPABILITY IMAP4rev1 LITERAL+ SASL-IR AUTH=PLAIN" {
 		t.Fatal("Bad capability:", scanner.Text())
 	}
 
@@ -39,8 +39,8 @@ func TestCapability(t *testing.T) {
 
 func TestNoop(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 NOOP\r\n")
 
@@ -52,8 +52,8 @@ func TestNoop(t *testing.T) {
 
 func TestLogout(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 LOGOUT\r\n")
 
@@ -80,15 +80,15 @@ func (ext *xnoop) Command(string) server.HandlerFactory {
 
 func TestServer_Enable(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	s.Enable(&xnoop{})
 
 	io.WriteString(c, "a001 CAPABILITY\r\n")
 
 	scanner.Scan()
-	if scanner.Text() != "* CAPABILITY IMAP4rev1 AUTH=PLAIN XNOOP" {
+	if scanner.Text() != "* CAPABILITY IMAP4rev1 LITERAL+ SASL-IR AUTH=PLAIN XNOOP" {
 		t.Fatal("Bad capability:", scanner.Text())
 	}
 
@@ -107,8 +107,8 @@ func (ext *xnoopAuth) Next(response []byte) (challenge []byte, done bool, err er
 
 func TestServer_EnableAuth(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	s.EnableAuth("XNOOP", func(server.Conn) sasl.Server {
 		return &xnoopAuth{}
@@ -117,8 +117,8 @@ func TestServer_EnableAuth(t *testing.T) {
 	io.WriteString(c, "a001 CAPABILITY\r\n")
 
 	scanner.Scan()
-	if scanner.Text() != "* CAPABILITY IMAP4rev1 AUTH=PLAIN AUTH=XNOOP" &&
-		scanner.Text() != "* CAPABILITY IMAP4rev1 AUTH=XNOOP AUTH=PLAIN" {
+	if scanner.Text() != "* CAPABILITY IMAP4rev1 LITERAL+ SASL-IR AUTH=PLAIN AUTH=XNOOP" &&
+		scanner.Text() != "* CAPABILITY IMAP4rev1 LITERAL+ SASL-IR AUTH=XNOOP AUTH=PLAIN" {
 		t.Fatal("Bad capability:", scanner.Text())
 	}
 

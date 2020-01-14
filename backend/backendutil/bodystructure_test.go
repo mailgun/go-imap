@@ -1,30 +1,47 @@
 package backendutil
 
 import (
+	"bufio"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-message"
+	"github.com/emersion/go-message/textproto"
+	"github.com/mailgun/go-imap"
 )
 
 var testBodyStructure = &imap.BodyStructure{
-	MimeType:    "multipart",
-	MimeSubType: "mixed",
+	MIMEType:    "multipart",
+	MIMESubType: "mixed",
 	Params:      map[string]string{"boundary": "message-boundary"},
 	Parts: []*imap.BodyStructure{
 		{
-			MimeType:          "text",
-			MimeSubType:       "plain",
-			Params:            map[string]string{},
-			Extended:          true,
-			Disposition:       "inline",
-			DispositionParams: map[string]string{},
+			MIMEType:    "multipart",
+			MIMESubType: "alternative",
+			Params:      map[string]string{"boundary": "b2"},
+			Extended:    true,
+			Parts: []*imap.BodyStructure{
+				{
+					MIMEType:          "text",
+					MIMESubType:       "plain",
+					Params:            map[string]string{},
+					Extended:          true,
+					Disposition:       "inline",
+					DispositionParams: map[string]string{},
+				},
+				{
+					MIMEType:          "text",
+					MIMESubType:       "html",
+					Params:            map[string]string{},
+					Extended:          true,
+					Disposition:       "inline",
+					DispositionParams: map[string]string{},
+				},
+			},
 		},
 		{
-			MimeType:          "text",
-			MimeSubType:       "plain",
+			MIMEType:          "text",
+			MIMESubType:       "plain",
 			Params:            map[string]string{},
 			Extended:          true,
 			Disposition:       "attachment",
@@ -35,12 +52,14 @@ var testBodyStructure = &imap.BodyStructure{
 }
 
 func TestFetchBodyStructure(t *testing.T) {
-	e, err := message.Read(strings.NewReader(testMailString))
+	bufferedBody := bufio.NewReader(strings.NewReader(testMailString))
+
+	header, err := textproto.ReadHeader(bufferedBody)
 	if err != nil {
 		t.Fatal("Expected no error while reading mail, got:", err)
 	}
 
-	bs, err := FetchBodyStructure(e, true)
+	bs, err := FetchBodyStructure(header, bufferedBody, true)
 	if err != nil {
 		t.Fatal("Expected no error while fetching body structure, got:", err)
 	}

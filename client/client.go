@@ -1,4 +1,8 @@
 // Package client provides an IMAP client.
+//
+// It is not safe to use the same Client from multiple goroutines. In general,
+// the IMAP protocol doesn't make it possible to send multiple independent
+// IMAP commands on the same connection.
 package client
 
 import (
@@ -9,54 +13,88 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
-	"github.com/emersion/go-imap"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/commands"
+	"github.com/mailgun/go-imap/responses"
 )
 
 // errClosed is used when a connection is closed while waiting for a command
 // response.
 var errClosed = fmt.Errorf("imap: connection closed")
 
+// errUnregisterHandler is returned by a response handler to unregister itself.
+var errUnregisterHandler = fmt.Errorf("imap: unregister handler")
+
+// Update is an unilateral server update.
+type Update interface {
+	update()
+}
+
+// StatusUpdate is delivered when a status update is received.
+type StatusUpdate struct {
+	Status *imap.StatusResp
+}
+
+func (u *StatusUpdate) update() {}
+
+// MailboxUpdate is delivered when a mailbox status changes.
+type MailboxUpdate struct {
+	Mailbox *imap.MailboxStatus
+}
+
+func (u *MailboxUpdate) update() {}
+
+// ExpungeUpdate is delivered when a message is deleted.
+type ExpungeUpdate struct {
+	SeqNum uint32
+}
+
+func (u *ExpungeUpdate) update() {}
+
+// MessageUpdate is delivered when a message attribute changes.
+type MessageUpdate struct {
+	Message *imap.Message
+}
+
+func (u *MessageUpdate) update() {}
+
 // Client is an IMAP client.
 type Client struct {
-	conn  *imap.Conn
-	isTLS bool
+	conn       *imap.Conn
+	isTLS      bool
+	serverName string
 
-	handles   imap.RespHandler
-	handler   *imap.MultiRespHandler
-	greeted   chan struct{}
 	loggedOut chan struct{}
+	continues chan<- bool
+	upgrading bool
 
-	// The cached server capabilities.
-	caps map[string]bool
-	// The caps map may be accessed in different goroutines. Protect access.
-	capsLocker sync.Mutex
+	handlers       []responses.Handler
+	handlersLocker sync.Mutex
 
 	// The current connection state.
-	State imap.ConnState
+	state imap.ConnState
 	// The selected mailbox, if there is one.
-	Mailbox *imap.MailboxStatus
+	mailbox *imap.MailboxStatus
+	// The cached server capabilities.
+	caps map[string]bool
+	// state, mailbox and caps may be accessed in different goroutines. Protect
+	// access.
+	locker sync.Mutex
 
-	// A channel where info messages from the server will be sent.
-	Infos chan *imap.StatusResp
-	// A channel where warning messages from the server will be sent.
-	Warnings chan *imap.StatusResp
-	// A channel where error messages from the server will be sent.
-	Errors chan *imap.StatusResp
-	// A channel where bye messages from the server will be sent.
-	Byes chan *imap.StatusResp
-	// A channel where mailbox updates from the server will be sent.
-	MailboxUpdates chan *imap.MailboxStatus
-	// A channel where deleted message IDs will be sent.
-	Expunges chan uint32
-	// A channel where messages updates from the server will be sent.
-	MessageUpdates chan *imap.Message
+	// A channel to which unilateral updates from the server will be sent. An
+	// update can be one of: *StatusUpdate, *MailboxUpdate, *MessageUpdate,
+	// *ExpungeUpdate. Note that blocking this channel blocks the whole client,
+	// so it's recommended to use a separate goroutine and a buffered channel to
+	// prevent deadlocks.
+	Updates chan<- Update
 
-	// ErrorLog specifies an optional logger for errors accepting
-	// connections and unexpected behavior from handlers.
-	// If nil, logging goes to os.Stderr via the log package's
-	// standard logger.
+	// ErrorLog specifies an optional logger for errors accepting connections and
+	// unexpected behavior from handlers. By default, logging goes to os.Stderr
+	// via the log package's standard logger. The logger must be safe to use
+	// simultaneously from multiple goroutines.
 	ErrorLog imap.Logger
 
 	// Timeout specifies a maximum amount of time to wait on a command.
@@ -65,178 +103,257 @@ type Client struct {
 	Timeout time.Duration
 }
 
-func (c *Client) read(greeted chan struct{}) error {
-	defer func() {
-		// Ensure we close the greeted channel. New may be waiting on an indication
-		// that we've seen the greeting.
-		if c.greeted != nil {
-			close(c.greeted)
-			c.greeted = nil
-		}
-		close(c.handles)
-		close(c.loggedOut)
-	}()
+func (c *Client) registerHandler(h responses.Handler) {
+	if h == nil {
+		return
+	}
 
-	first := true
-	for {
-		if c.State == imap.LogoutState {
-			return nil
-		}
+	c.handlersLocker.Lock()
+	c.handlers = append(c.handlers, h)
+	c.handlersLocker.Unlock()
+}
 
-		c.conn.Wait()
-
-		if first {
-			first = false
-		} else {
-			<-greeted
-			if c.greeted != nil {
-				close(c.greeted)
-				c.greeted = nil
+func (c *Client) handle(resp imap.Resp) error {
+	c.handlersLocker.Lock()
+	for i := len(c.handlers) - 1; i >= 0; i-- {
+		if err := c.handlers[i].Handle(resp); err != responses.ErrUnhandled {
+			if err == errUnregisterHandler {
+				c.handlers = append(c.handlers[:i], c.handlers[i+1:]...)
+				err = nil
 			}
+			c.handlersLocker.Unlock()
+			return err
 		}
+	}
+	c.handlersLocker.Unlock()
+	return responses.ErrUnhandled
+}
 
-		res, err := imap.ReadResp(c.conn.Reader)
-		if err == io.EOF || c.State == imap.LogoutState {
-			return nil
-		}
+func (c *Client) reader() {
+	defer close(c.loggedOut)
+	// Loop while connected.
+	for {
+		connected, err := c.readOnce()
 		if err != nil {
 			c.ErrorLog.Println("error reading response:", err)
-			if imap.IsParseError(err) {
-				continue
-			} else {
-				return err
-			}
 		}
-
-		rh := &imap.RespHandle{
-			Resp:    res,
-			Accepts: make(chan bool),
-		}
-		c.handles <- rh
-		if accepted := <-rh.Accepts; !accepted {
-			c.ErrorLog.Println("response has not been handled:", res)
+		if !connected {
+			return
 		}
 	}
 }
 
-func (c *Client) execute(cmdr imap.Commander, res imap.RespHandlerFrom) (status *imap.StatusResp, err error) {
+func (c *Client) readOnce() (bool, error) {
+	if c.State() == imap.LogoutState {
+		return false, nil
+	}
+
+	resp, err := imap.ReadResp(c.conn.Reader)
+	if err == io.EOF || c.State() == imap.LogoutState {
+		return false, nil
+	} else if err != nil {
+		if opErr, ok := err.(*net.OpError); ok {
+			if syscallErr, ok := opErr.Err.(*os.SyscallError); ok {
+				if syscallErr.Err == syscall.ECONNRESET {
+					return false, nil
+				}
+			}
+		}
+		if imap.IsParseError(err) {
+			return true, err
+		} else {
+			return false, err
+		}
+	}
+
+	if err := c.handle(resp); err != nil && err != responses.ErrUnhandled {
+		c.ErrorLog.Println("cannot handle response ", resp, err)
+	}
+	return true, nil
+}
+
+func (c *Client) writeReply(reply []byte) error {
+	if _, err := c.conn.Writer.Write(reply); err != nil {
+		return err
+	}
+	// Flush reply
+	return c.conn.Writer.Flush()
+}
+
+type handleResult struct {
+	status *imap.StatusResp
+	err    error
+}
+
+func (c *Client) execute(cmdr imap.Commander, h responses.Handler) (*imap.StatusResp, error) {
 	cmd := cmdr.Command()
 	cmd.Tag = generateTag()
 
+	var replies <-chan []byte
+	if replier, ok := h.(responses.Replier); ok {
+		replies = replier.Replies()
+	}
+
 	if c.Timeout > 0 {
-		err = c.conn.SetDeadline(time.Now().Add(c.Timeout))
+		err := c.conn.SetDeadline(time.Now().Add(c.Timeout))
 		if err != nil {
-			return
+			return nil, err
 		}
 	} else {
 		// It's possible the client had a timeout set from a previous command, but no
 		// longer does. Ensure we respect that. The zero time means no deadline.
-		err = c.conn.SetDeadline(time.Time{})
-		if err != nil {
-			return
+		if err := c.conn.SetDeadline(time.Time{}); err != nil {
+			return nil, err
 		}
 	}
+
+	// Check if we are upgrading.
+	upgrading := c.upgrading
 
 	// Add handler before sending command, to be sure to get the response in time
 	// (in tests, the response is sent right after our command is received, so
 	// sometimes the response was received before the setup of this handler)
-	statusHdlr := make(imap.RespHandler)
-	c.handler.Add(statusHdlr)
+	doneHandle := make(chan handleResult, 1)
+	unregister := make(chan struct{})
+	c.registerHandler(responses.HandlerFunc(func(resp imap.Resp) error {
+		select {
+		case <-unregister:
+			// If an error occured while sending the command, abort
+			return errUnregisterHandler
+		default:
+		}
+
+		if s, ok := resp.(*imap.StatusResp); ok && s.Tag == cmd.Tag {
+			// This is the command's status response, we're done
+			doneHandle <- handleResult{s, nil}
+			// Special handling of connection upgrading.
+			if upgrading {
+				c.upgrading = false
+				// Wait for upgrade to finish.
+				c.conn.Wait()
+			}
+			// Cancel any pending literal write
+			select {
+			case c.continues <- false:
+			default:
+			}
+			return errUnregisterHandler
+		}
+
+		if h != nil {
+			// Pass the response to the response handler
+			if err := h.Handle(resp); err != nil && err != responses.ErrUnhandled {
+				// If the response handler returns an error, abort
+				doneHandle <- handleResult{nil, err}
+				return errUnregisterHandler
+			} else {
+				return err
+			}
+		}
+		return responses.ErrUnhandled
+	}))
 
 	// Send the command to the server
-	doneWrite := make(chan error, 1)
-	go func() {
-		doneWrite <- cmd.WriteTo(c.conn.Writer)
-	}()
+	if err := cmd.WriteTo(c.conn.Writer); err != nil {
+		// Error while sending the command
+		close(unregister)
 
-	// If a response handler is provided, start it
-	var hdlr imap.RespHandler
-	var doneHandle chan error
-	if res != nil {
-		hdlr = make(imap.RespHandler)
-		doneHandle = make(chan error, 1)
+		if err, ok := err.(imap.LiteralLengthErr); ok {
+			// Expected > Actual
+			//  The server is waiting for us to write
+			//  more bytes, we don't have them. Run.
+			// Expected < Actual
+			//  We are about to send a potentially truncated message, we don't
+			//  want this (ths terminating CRLF is not sent at this point).
+			c.conn.Close()
+			return nil, err
+		}
 
-		go func() {
-			doneHandle <- res.HandleFrom(hdlr)
-		}()
+		return nil, err
+	}
+	// Flush writer if we are upgrading
+	if upgrading {
+		if err := c.conn.Writer.Flush(); err != nil {
+			// Error while sending the command
+			close(unregister)
+			return nil, err
+		}
 	}
 
 	for {
 		select {
+		case reply := <-replies:
+			// Response handler needs to send a reply (Used for AUTHENTICATE)
+			if err := c.writeReply(reply); err != nil {
+				close(unregister)
+				return nil, err
+			}
 		case <-c.loggedOut:
 			// If the connection is closed (such as from an I/O error), ensure we
 			// realize this and don't block waiting on a response that will never
 			// come. loggedOut is a channel that closes when the reader goroutine
 			// ends.
-			err = errClosed
-			return
-		case err = <-doneWrite:
-			// Error while sending the command
-			if err != nil {
-				c.handler.Del(statusHdlr)
-			}
-		case err = <-doneHandle:
-			// Error while handling responses
-			if err != nil {
-				c.handler.Del(statusHdlr)
-			}
-		case h, more := <-statusHdlr:
-			if !more {
-				// statusHdlr has been closed, stop here
-				return
-			}
-
-			// If the status tag matches the command tag, the response is completed
-			if s, ok := h.Resp.(*imap.StatusResp); ok && s.Tag == cmd.Tag {
-				h.Accept()
-				status = s
-
-				// Stop the response handler, if it's running
-				if hdlr != nil {
-					close(hdlr)
-				}
-
-				// Do not listen for responses anymore
-				c.handler.Del(statusHdlr)
-			} else if hdlr != nil {
-				hdlr <- h
-			} else {
-				h.Reject()
-			}
+			close(unregister)
+			return nil, errClosed
+		case result := <-doneHandle:
+			return result.status, result.err
 		}
 	}
 }
 
-// Execute executes a generic command. cmdr is a value that can be converted to
-// a raw command and res is a value that can handle responses. The function
-// returns when the command has completed or failed, in this case err is nil. A
-// non-nil err value indicates a network error.
+// State returns the current connection state.
+func (c *Client) State() imap.ConnState {
+	c.locker.Lock()
+	state := c.state
+	c.locker.Unlock()
+	return state
+}
+
+// Mailbox returns the selected mailbox. It returns nil if there isn't one.
+func (c *Client) Mailbox() *imap.MailboxStatus {
+	// c.Mailbox fields are not supposed to change, so we can return the pointer.
+	c.locker.Lock()
+	mbox := c.mailbox
+	c.locker.Unlock()
+	return mbox
+}
+
+// SetState sets this connection's internal state.
 //
 // This function should not be called directly, it must only be used by
 // libraries implementing extensions of the IMAP protocol.
-func (c *Client) Execute(cmdr imap.Commander, res imap.RespHandlerFrom) (status *imap.StatusResp, err error) {
-	return c.execute(cmdr, res)
+func (c *Client) SetState(state imap.ConnState, mailbox *imap.MailboxStatus) {
+	c.locker.Lock()
+	c.state = state
+	c.mailbox = mailbox
+	c.locker.Unlock()
 }
 
-func (c *Client) handleContinuationReqs(continues chan<- bool) {
-	hdlr := make(imap.RespHandler)
-	c.handler.Add(hdlr)
-	defer c.handler.Del(hdlr)
+// Execute executes a generic command. cmdr is a value that can be converted to
+// a raw command and h is a response handler. The function returns when the
+// command has completed or failed, in this case err is nil. A non-nil err value
+// indicates a network error.
+//
+// This function should not be called directly, it must only be used by
+// libraries implementing extensions of the IMAP protocol.
+func (c *Client) Execute(cmdr imap.Commander, h responses.Handler) (*imap.StatusResp, error) {
+	return c.execute(cmdr, h)
+}
 
-	defer close(continues)
-
-	for h := range hdlr {
-		if _, ok := h.Resp.(*imap.ContinuationResp); ok {
-			h.Accept()
-			continues <- true
-		} else {
-			h.Reject()
+func (c *Client) handleContinuationReqs() {
+	c.registerHandler(responses.HandlerFunc(func(resp imap.Resp) error {
+		if _, ok := resp.(*imap.ContinuationReq); ok {
+			go func() {
+				c.continues <- true
+			}()
+			return nil
 		}
-	}
+		return responses.ErrUnhandled
+	}))
 }
 
 func (c *Client) gotStatusCaps(args []interface{}) {
-	c.capsLocker.Lock()
+	c.locker.Lock()
 
 	c.caps = make(map[string]bool)
 	for _, cap := range args {
@@ -245,152 +362,169 @@ func (c *Client) gotStatusCaps(args []interface{}) {
 		}
 	}
 
-	c.capsLocker.Unlock()
+	c.locker.Unlock()
 }
 
 // The server can send unilateral data. This function handles it.
 func (c *Client) handleUnilateral() {
-	hdlr := make(imap.RespHandler)
-	c.handler.Add(hdlr)
-	defer c.handler.Del(hdlr)
-
-	greeted := make(chan struct{})
-
-	// Make sure to start reading after we have set up the base handlers,
-	// otherwise some messages will be lost.
-	go c.read(greeted)
-
-	for h := range hdlr {
-		switch res := h.Resp.(type) {
+	c.registerHandler(responses.HandlerFunc(func(resp imap.Resp) error {
+		switch resp := resp.(type) {
 		case *imap.StatusResp:
-			if res.Tag != "*" ||
-				(res.Type != imap.StatusOk && res.Type != imap.StatusNo && res.Type != imap.StatusBad && res.Type != imap.StatusBye) ||
-				(res.Code != "" && res.Code != imap.CodeAlert && res.Code != imap.CodeCapability) {
-				h.Reject()
-				break
-			}
-			h.Accept()
-
-			if greeted != nil {
-				switch res.Type {
-				case imap.StatusPreauth:
-					c.State = imap.AuthenticatedState
-				case imap.StatusBye:
-					c.State = imap.LogoutState
-				case imap.StatusOk:
-					c.State = imap.NotAuthenticatedState
-				default:
-					c.ErrorLog.Println("invalid greeting:", res.Type)
-					c.State = imap.LogoutState
-				}
-
-				if res.Code == imap.CodeCapability {
-					c.gotStatusCaps(res.Arguments)
-				}
-
-				close(greeted)
-				greeted = nil
+			if resp.Tag != "*" {
+				return responses.ErrUnhandled
 			}
 
-			switch res.Type {
-			case imap.StatusOk:
-				if c.Infos != nil {
-					c.Infos <- res
+			switch resp.Type {
+			case imap.StatusRespOk, imap.StatusRespNo, imap.StatusRespBad:
+				if c.Updates != nil {
+					c.Updates <- &StatusUpdate{resp}
 				}
-			case imap.StatusNo:
-				if c.Warnings != nil {
-					c.Warnings <- res
-				}
-			case imap.StatusBad:
-				if c.Errors != nil {
-					c.Errors <- res
-				}
-			case imap.StatusBye:
-				c.State = imap.LogoutState
-				c.Mailbox = nil
+			case imap.StatusRespBye:
+				c.locker.Lock()
+				c.state = imap.LogoutState
+				c.mailbox = nil
+				c.locker.Unlock()
+
 				c.conn.Close()
 
-				if c.Byes != nil {
-					c.Byes <- res
+				if c.Updates != nil {
+					c.Updates <- &StatusUpdate{resp}
 				}
+			default:
+				return responses.ErrUnhandled
 			}
-		case *imap.Resp:
-			if len(res.Fields) < 2 {
-				h.Reject()
-				break
+		case *imap.DataResp:
+			name, fields, ok := imap.ParseNamedResp(resp)
+			if !ok {
+				return responses.ErrUnhandled
 			}
-
-			// A CAPABILITY response
-			if name, ok := res.Fields[0].(string); ok && name == imap.Capability {
-				h.Accept()
-				c.gotStatusCaps(res.Fields[1:len(res.Fields)])
-				break
-			}
-
-			// An unilateral EXISTS, RECENT, EXPUNGE or FETCH response
-			name, ok := res.Fields[1].(string)
-			if !ok || (name != "EXISTS" && name != "RECENT" && name != "EXPUNGE" && name != "FETCH") {
-				h.Reject()
-				break
-			}
-			h.Accept()
 
 			switch name {
+			case "CAPABILITY":
+				c.gotStatusCaps(fields)
 			case "EXISTS":
-				if c.Mailbox == nil {
+				if c.Mailbox() == nil {
 					break
 				}
 
-				if messages, err := imap.ParseNumber(res.Fields[0]); err == nil {
-					c.Mailbox.Messages = messages
-					c.Mailbox.ItemsLocker.Lock()
-					c.Mailbox.Items[imap.MailboxMessages] = nil
-					c.Mailbox.ItemsLocker.Unlock()
+				if messages, err := imap.ParseNumber(fields[0]); err == nil {
+					c.locker.Lock()
+					c.mailbox.Messages = messages
+					c.locker.Unlock()
+
+					c.mailbox.ItemsLocker.Lock()
+					c.mailbox.Items[imap.StatusMessages] = nil
+					c.mailbox.ItemsLocker.Unlock()
 				}
 
-				if c.MailboxUpdates != nil {
-					c.MailboxUpdates <- c.Mailbox
+				if c.Updates != nil {
+					c.Updates <- &MailboxUpdate{c.Mailbox()}
 				}
 			case "RECENT":
-				if c.Mailbox == nil {
+				if c.Mailbox() == nil {
 					break
 				}
 
-				if recent, err := imap.ParseNumber(res.Fields[0]); err == nil {
-					c.Mailbox.Recent = recent
-					c.Mailbox.ItemsLocker.Lock()
-					c.Mailbox.Items[imap.MailboxRecent] = nil
-					c.Mailbox.ItemsLocker.Unlock()
+				if recent, err := imap.ParseNumber(fields[0]); err == nil {
+					c.locker.Lock()
+					c.mailbox.Recent = recent
+					c.locker.Unlock()
+
+					c.mailbox.ItemsLocker.Lock()
+					c.mailbox.Items[imap.StatusRecent] = nil
+					c.mailbox.ItemsLocker.Unlock()
 				}
 
-				if c.MailboxUpdates != nil {
-					c.MailboxUpdates <- c.Mailbox
+				if c.Updates != nil {
+					c.Updates <- &MailboxUpdate{c.Mailbox()}
 				}
 			case "EXPUNGE":
-				seqNum, _ := imap.ParseNumber(res.Fields[0])
+				seqNum, _ := imap.ParseNumber(fields[0])
 
-				if c.Expunges != nil {
-					c.Expunges <- seqNum
+				if c.Updates != nil {
+					c.Updates <- &ExpungeUpdate{seqNum}
 				}
 			case "FETCH":
-				seqNum, _ := imap.ParseNumber(res.Fields[0])
-				fields, _ := res.Fields[2].([]interface{})
+				seqNum, _ := imap.ParseNumber(fields[0])
+				fields, _ := fields[1].([]interface{})
 
-				msg := &imap.Message{
-					SeqNum: seqNum,
-				}
+				msg := &imap.Message{SeqNum: seqNum}
 				if err := msg.Parse(fields); err != nil {
 					break
 				}
 
-				if c.MessageUpdates != nil {
-					c.MessageUpdates <- msg
+				if c.Updates != nil {
+					c.Updates <- &MessageUpdate{msg}
 				}
+			default:
+				return responses.ErrUnhandled
 			}
 		default:
-			h.Reject()
+			return responses.ErrUnhandled
+		}
+		return nil
+	}))
+}
+
+func (c *Client) handleGreetAndStartReading() error {
+	var greetErr error
+	gotGreet := false
+
+	c.registerHandler(responses.HandlerFunc(func(resp imap.Resp) error {
+		status, ok := resp.(*imap.StatusResp)
+		if !ok {
+			greetErr = fmt.Errorf("invalid greeting received from server: not a status response")
+			return errUnregisterHandler
+		}
+
+		c.locker.Lock()
+		switch status.Type {
+		case imap.StatusRespPreauth:
+			c.state = imap.AuthenticatedState
+		case imap.StatusRespBye:
+			c.state = imap.LogoutState
+		case imap.StatusRespOk:
+			c.state = imap.NotAuthenticatedState
+		default:
+			c.state = imap.LogoutState
+			c.locker.Unlock()
+			greetErr = fmt.Errorf("invalid greeting received from server: %v", status.Type)
+			return errUnregisterHandler
+		}
+		c.locker.Unlock()
+
+		if status.Code == imap.CodeCapability {
+			c.gotStatusCaps(status.Arguments)
+		}
+
+		gotGreet = true
+		return errUnregisterHandler
+	}))
+
+	// call `readOnce` until we get the greeting or an error
+	for !gotGreet {
+		connected, err := c.readOnce()
+		// Check for read errors
+		if err != nil {
+			// return read errors
+			return err
+		}
+		// Check for invalid greet
+		if greetErr != nil {
+			// return read errors
+			return greetErr
+		}
+		// Check if connection was closed.
+		if !connected {
+			// connection closed.
+			return io.EOF
 		}
 	}
+
+	// We got the greeting, now start the reader goroutine.
+	go c.reader()
+
+	return nil
 }
 
 // Upgrade a connection, e.g. wrap an unencrypted connection with an encrypted
@@ -424,50 +558,74 @@ func (c *Client) LoggedOut() <-chan struct{} {
 // SetDebug defines an io.Writer to which all network activity will be logged.
 // If nil is provided, network activity will not be logged.
 func (c *Client) SetDebug(w io.Writer) {
-	c.conn.SetDebug(w)
+	// Need to send a command to unblock the reader goroutine.
+	cmd := new(commands.Noop)
+	err := c.Upgrade(func(conn net.Conn) (net.Conn, error) {
+		// Flag connection as in upgrading
+		c.upgrading = true
+		if status, err := c.execute(cmd, nil); err != nil {
+			return nil, err
+		} else if err := status.Err(); err != nil {
+			return nil, err
+		}
+
+		// Wait for reader to block.
+		c.conn.WaitReady()
+
+		c.conn.SetDebug(w)
+		return conn, nil
+	})
+	if err != nil {
+		log.Println("SetDebug:", err)
+	}
+
 }
 
 // New creates a new client from an existing connection.
-func New(conn net.Conn) (c *Client, err error) {
+func New(conn net.Conn) (*Client, error) {
 	continues := make(chan bool)
 	w := imap.NewClientWriter(nil, continues)
 	r := imap.NewReader(nil)
 
-	c = &Client{
+	c := &Client{
 		conn:      imap.NewConn(conn, r, w),
-		handles:   make(imap.RespHandler),
-		handler:   imap.NewMultiRespHandler(),
-		greeted:   make(chan struct{}),
 		loggedOut: make(chan struct{}),
-		State:     imap.ConnectingState,
+		continues: continues,
+		state:     imap.ConnectingState,
 		ErrorLog:  log.New(os.Stderr, "imap/client: ", log.LstdFlags),
 	}
 
-	go c.handleContinuationReqs(continues)
-	go c.handleUnilateral()
-	go c.handler.HandleFrom(c.handles)
+	c.handleContinuationReqs()
+	c.handleUnilateral()
+	if err := c.handleGreetAndStartReading(); err != nil {
+		return c, err
+	}
 
-	<-c.greeted
-	return
+	plusOk, _ := c.Support("LITERAL+")
+	minusOk, _ := c.Support("LITERAL-")
+	// We don't use non-sync literal if it is bigger than 4096 bytes, so
+	// LITERAL- is fine too.
+	c.conn.AllowAsyncLiterals = plusOk || minusOk
+
+	return c, nil
 }
 
 // Dial connects to an IMAP server using an unencrypted connection.
-func Dial(addr string) (c *Client, err error) {
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		return
-	}
+func Dial(addr string) (*Client, error) {
+	return DialWithDialer(new(net.Dialer), addr)
+}
 
-	c, err = New(conn)
-	return
+type Dialer interface {
+	// Dial connects to the given address.
+	Dial(network, addr string) (net.Conn, error)
 }
 
 // DialWithDialer connects to an IMAP server using an unencrypted connection
 // using dialer.Dial.
 //
-// Among other uses, this allows us to apply a connection timeout.
-func DialWithDialer(dialer *net.Dialer, address string) (c *Client, err error) {
-	conn, err := dialer.Dial("tcp", address)
+// Among other uses, this allows to apply a dial timeout.
+func DialWithDialer(dialer Dialer, addr string) (*Client, error) {
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -476,52 +634,64 @@ func DialWithDialer(dialer *net.Dialer, address string) (c *Client, err error) {
 	// there is no way to set the client's Timeout for that action. As a
 	// workaround, if the dialer has a timeout set, use that for the connection's
 	// deadline.
-	if dialer.Timeout > 0 {
-		err = conn.SetDeadline(time.Now().Add(dialer.Timeout))
+	if netDialer, ok := dialer.(*net.Dialer); ok && netDialer.Timeout > 0 {
+		err := conn.SetDeadline(time.Now().Add(netDialer.Timeout))
 		if err != nil {
-			return
+			return nil, err
 		}
 	}
 
-	c, err = New(conn)
-	return
+	c, err := New(conn)
+	if err != nil {
+		return nil, err
+	}
+
+	c.serverName, _, _ = net.SplitHostPort(addr)
+	return c, nil
 }
 
 // DialTLS connects to an IMAP server using an encrypted connection.
-func DialTLS(addr string, tlsConfig *tls.Config) (c *Client, err error) {
-	conn, err := tls.Dial("tcp", addr, tlsConfig)
-	if err != nil {
-		return
-	}
-
-	c, err = New(conn)
-	c.isTLS = true
-	return
+func DialTLS(addr string, tlsConfig *tls.Config) (*Client, error) {
+	return DialWithDialerTLS(new(net.Dialer), addr, tlsConfig)
 }
 
 // DialWithDialerTLS connects to an IMAP server using an encrypted connection
 // using dialer.Dial.
 //
-// Among other uses, this allows us to apply a connection timeout.
-func DialWithDialerTLS(dialer *net.Dialer, addr string,
-	tlsConfig *tls.Config) (c *Client, err error) {
-	conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+// Among other uses, this allows to apply a dial timeout.
+func DialWithDialerTLS(dialer Dialer, addr string, tlsConfig *tls.Config) (*Client, error) {
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
-		return
+		return nil, err
 	}
+
+	serverName, _, _ := net.SplitHostPort(addr)
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{}
+	}
+	if tlsConfig.ServerName == "" {
+		tlsConfig = tlsConfig.Clone()
+		tlsConfig.ServerName = serverName
+	}
+	tlsConn := tls.Client(conn, tlsConfig)
 
 	// We don't return to the caller until we try to receive a greeting. As such,
 	// there is no way to set the client's Timeout for that action. As a
 	// workaround, if the dialer has a timeout set, use that for the connection's
 	// deadline.
-	if dialer.Timeout > 0 {
-		err = conn.SetDeadline(time.Now().Add(dialer.Timeout))
+	if netDialer, ok := dialer.(*net.Dialer); ok && netDialer.Timeout > 0 {
+		err := tlsConn.SetDeadline(time.Now().Add(netDialer.Timeout))
 		if err != nil {
-			return
+			return nil, err
 		}
 	}
 
-	c, err = New(conn)
+	c, err := New(tlsConn)
+	if err != nil {
+		return nil, err
+	}
+
 	c.isTLS = true
-	return
+	c.serverName = serverName
+	return c, nil
 }

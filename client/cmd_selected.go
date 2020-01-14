@@ -2,11 +2,10 @@ package client
 
 import (
 	"errors"
-	"strings"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/commands"
-	"github.com/emersion/go-imap/responses"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/commands"
+	"github.com/mailgun/go-imap/responses"
 )
 
 // ErrNoMailboxSelected is returned if a command that requires a mailbox to be
@@ -17,7 +16,7 @@ var ErrNoMailboxSelected = errors.New("No mailbox selected")
 // refers to any implementation-dependent housekeeping associated with the
 // mailbox that is not normally executed as part of each command.
 func (c *Client) Check() error {
-	if c.State != imap.SelectedState {
+	if c.State() != imap.SelectedState {
 		return ErrNoMailboxSelected
 	}
 
@@ -35,7 +34,7 @@ func (c *Client) Check() error {
 // the currently selected mailbox, and returns to the authenticated state from
 // the selected state.
 func (c *Client) Close() error {
-	if c.State != imap.SelectedState {
+	if c.State() != imap.SelectedState {
 		return ErrNoMailboxSelected
 	}
 
@@ -48,27 +47,35 @@ func (c *Client) Close() error {
 		return err
 	}
 
-	c.State = imap.AuthenticatedState
-	c.Mailbox = nil
+	c.locker.Lock()
+	c.state = imap.AuthenticatedState
+	c.mailbox = nil
+	c.locker.Unlock()
 	return nil
+}
+
+// Terminate closes the tcp connection
+func (c *Client) Terminate() error {
+	return c.conn.Close()
 }
 
 // Expunge permanently removes all messages that have the \Deleted flag set from
 // the currently selected mailbox. If ch is not nil, sends sequence IDs of each
 // deleted message to this channel.
 func (c *Client) Expunge(ch chan uint32) error {
-	if c.State != imap.SelectedState {
+	if c.State() != imap.SelectedState {
 		return ErrNoMailboxSelected
 	}
 
 	cmd := new(commands.Expunge)
 
-	var res imap.RespHandlerFrom
+	var h responses.Handler
 	if ch != nil {
-		res = &responses.Expunge{SeqNums: ch}
+		h = &responses.Expunge{SeqNums: ch}
+		defer close(ch)
 	}
 
-	status, err := c.execute(cmd, res)
+	status, err := c.execute(cmd, h)
 	if err != nil {
 		return err
 	}
@@ -76,13 +83,12 @@ func (c *Client) Expunge(ch chan uint32) error {
 }
 
 func (c *Client) executeSearch(uid bool, criteria *imap.SearchCriteria, charset string) (ids []uint32, status *imap.StatusResp, err error) {
-	if c.State != imap.SelectedState {
+	if c.State() != imap.SelectedState {
 		err = ErrNoMailboxSelected
 		return
 	}
 
-	var cmd imap.Commander
-	cmd = &commands.Search{
+	var cmd imap.Commander = &commands.Search{
 		Charset:  charset,
 		Criteria: criteria,
 	}
@@ -116,7 +122,8 @@ func (c *Client) search(uid bool, criteria *imap.SearchCriteria) (ids []uint32, 
 // match the searching criteria. When multiple keys are specified, the result is
 // the intersection (AND function) of all the messages that match those keys.
 // Criteria must be UTF-8 encoded. See RFC 3501 section 6.4.4 for a list of
-// searching criteria.
+// searching criteria. When no criteria has been set, all messages in the mailbox
+// will be searched using ALL criteria.
 func (c *Client) Search(criteria *imap.SearchCriteria) (seqNums []uint32, err error) {
 	return c.search(false, criteria)
 }
@@ -127,13 +134,14 @@ func (c *Client) UidSearch(criteria *imap.SearchCriteria) (uids []uint32, err er
 	return c.search(true, criteria)
 }
 
-func (c *Client) fetch(uid bool, seqset *imap.SeqSet, items []string, ch chan *imap.Message) error {
-	if c.State != imap.SelectedState {
+func (c *Client) fetch(uid bool, seqset *imap.SeqSet, items []imap.FetchItem, ch chan *imap.Message) error {
+	defer close(ch)
+
+	if c.State() != imap.SelectedState {
 		return ErrNoMailboxSelected
 	}
 
-	var cmd imap.Commander
-	cmd = &commands.Fetch{
+	var cmd imap.Commander = &commands.Fetch{
 		SeqSet: seqset,
 		Items:  items,
 	}
@@ -152,29 +160,40 @@ func (c *Client) fetch(uid bool, seqset *imap.SeqSet, items []string, ch chan *i
 
 // Fetch retrieves data associated with a message in the mailbox. See RFC 3501
 // section 6.4.5 for a list of items that can be requested.
-func (c *Client) Fetch(seqset *imap.SeqSet, items []string, ch chan *imap.Message) error {
+func (c *Client) Fetch(seqset *imap.SeqSet, items []imap.FetchItem, ch chan *imap.Message) error {
 	return c.fetch(false, seqset, items, ch)
 }
 
 // UidFetch is identical to Fetch, but seqset is interpreted as containing
 // unique identifiers instead of message sequence numbers.
-func (c *Client) UidFetch(seqset *imap.SeqSet, items []string, ch chan *imap.Message) error {
+func (c *Client) UidFetch(seqset *imap.SeqSet, items []imap.FetchItem, ch chan *imap.Message) error {
 	return c.fetch(true, seqset, items, ch)
 }
 
-func (c *Client) store(uid bool, seqset *imap.SeqSet, item string, value interface{}, ch chan *imap.Message) error {
-	if c.State != imap.SelectedState {
+func (c *Client) store(uid bool, seqset *imap.SeqSet, item imap.StoreItem, value interface{}, ch chan *imap.Message) error {
+	if c.State() != imap.SelectedState {
 		return ErrNoMailboxSelected
+	}
+
+	// TODO: this could break extensions (this only works when item is FLAGS)
+	if fields, ok := value.([]interface{}); ok {
+		for i, field := range fields {
+			if s, ok := field.(string); ok {
+				fields[i] = imap.RawString(s)
+			}
+		}
 	}
 
 	// If ch is nil, the updated values are data which will be lost, so don't
 	// retrieve it.
-	if ch == nil && !strings.HasSuffix(item, imap.SilentOp) {
-		item += imap.SilentOp
+	if ch == nil {
+		op, _, err := imap.ParseFlagsOp(item)
+		if err == nil {
+			item = imap.FormatFlagsOp(op, true)
+		}
 	}
 
-	var cmd imap.Commander
-	cmd = &commands.Store{
+	var cmd imap.Commander = &commands.Store{
 		SeqSet: seqset,
 		Item:   item,
 		Value:  value,
@@ -183,12 +202,13 @@ func (c *Client) store(uid bool, seqset *imap.SeqSet, item string, value interfa
 		cmd = &commands.Uid{Cmd: cmd}
 	}
 
-	var res imap.RespHandlerFrom
+	var h responses.Handler
 	if ch != nil {
-		res = &responses.Fetch{Messages: ch}
+		h = &responses.Fetch{Messages: ch}
+		defer close(ch)
 	}
 
-	status, err := c.execute(cmd, res)
+	status, err := c.execute(cmd, h)
 	if err != nil {
 		return err
 	}
@@ -198,18 +218,18 @@ func (c *Client) store(uid bool, seqset *imap.SeqSet, item string, value interfa
 // Store alters data associated with a message in the mailbox. If ch is not nil,
 // the updated value of the data will be sent to this channel. See RFC 3501
 // section 6.4.6 for a list of items that can be updated.
-func (c *Client) Store(seqset *imap.SeqSet, item string, value interface{}, ch chan *imap.Message) error {
+func (c *Client) Store(seqset *imap.SeqSet, item imap.StoreItem, value interface{}, ch chan *imap.Message) error {
 	return c.store(false, seqset, item, value, ch)
 }
 
 // UidStore is identical to Store, but seqset is interpreted as containing
 // unique identifiers instead of message sequence numbers.
-func (c *Client) UidStore(seqset *imap.SeqSet, item string, value interface{}, ch chan *imap.Message) error {
+func (c *Client) UidStore(seqset *imap.SeqSet, item imap.StoreItem, value interface{}, ch chan *imap.Message) error {
 	return c.store(true, seqset, item, value, ch)
 }
 
 func (c *Client) copy(uid bool, seqset *imap.SeqSet, dest string) error {
-	if c.State != imap.SelectedState {
+	if c.State() != imap.SelectedState {
 		return ErrNoMailboxSelected
 	}
 

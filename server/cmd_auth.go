@@ -3,10 +3,10 @@ package server
 import (
 	"errors"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/backend"
-	"github.com/emersion/go-imap/commands"
-	"github.com/emersion/go-imap/responses"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/backend"
+	"github.com/mailgun/go-imap/commands"
+	"github.com/mailgun/go-imap/responses"
 )
 
 // imap errors in Authenticated state.
@@ -29,10 +29,9 @@ func (cmd *Select) Handle(conn Conn) error {
 		return err
 	}
 
-	items := []string{
-		imap.MailboxFlags, imap.MailboxPermanentFlags,
-		imap.MailboxMessages, imap.MailboxRecent, imap.MailboxUnseen,
-		imap.MailboxUidNext, imap.MailboxUidValidity,
+	items := []imap.StatusItem{
+		imap.StatusMessages, imap.StatusRecent, imap.StatusUnseen,
+		imap.StatusUidNext, imap.StatusUidValidity,
 	}
 
 	status, err := mbox.Status(items)
@@ -48,12 +47,12 @@ func (cmd *Select) Handle(conn Conn) error {
 		return err
 	}
 
-	code := imap.CodeReadWrite
+	var code imap.StatusRespCode = imap.CodeReadWrite
 	if ctx.MailboxReadOnly {
 		code = imap.CodeReadOnly
 	}
 	return ErrStatusResp(&imap.StatusResp{
-		Type: imap.StatusOk,
+		Type: imap.StatusRespOk,
 		Code: code,
 	})
 }
@@ -149,11 +148,14 @@ func (cmd *List) Handle(conn Conn) error {
 	done := make(chan error, 1)
 	go (func() {
 		done <- conn.WriteResp(res)
-		close(done)
+		// Make sure to drain the channel.
+		for _ = range ch {
+		}
 	})()
 
 	mailboxes, err := ctx.User.ListMailboxes(cmd.Subscribed)
 	if err != nil {
+		// Close channel to signal end of results
 		close(ch)
 		return err
 	}
@@ -161,6 +163,7 @@ func (cmd *List) Handle(conn Conn) error {
 	for _, mbox := range mailboxes {
 		info, err := mbox.Info()
 		if err != nil {
+			// Close channel to signal end of results
 			close(ch)
 			return err
 		}
@@ -181,7 +184,7 @@ func (cmd *List) Handle(conn Conn) error {
 			ch <- info
 		}
 	}
-
+	// Close channel to signal end of results
 	close(ch)
 
 	return <-done
@@ -208,7 +211,7 @@ func (cmd *Status) Handle(conn Conn) error {
 	}
 
 	// Only keep items thqat have been requested
-	items := make(map[string]interface{})
+	items := make(map[imap.StatusItem]interface{})
 	for _, k := range cmd.Items {
 		items[k] = status.Items[k]
 	}
@@ -231,7 +234,7 @@ func (cmd *Append) Handle(conn Conn) error {
 	mbox, err := ctx.User.GetMailbox(cmd.Mailbox)
 	if err == backend.ErrNoSuchMailbox {
 		return ErrStatusResp(&imap.StatusResp{
-			Type: imap.StatusNo,
+			Type: imap.StatusRespNo,
 			Code: imap.CodeTryCreate,
 			Info: err.Error(),
 		})
@@ -246,10 +249,13 @@ func (cmd *Append) Handle(conn Conn) error {
 	// If APPEND targets the currently selected mailbox, send an untagged EXISTS
 	// Do this only if the backend doesn't send updates itself
 	if conn.Server().Updates == nil && ctx.Mailbox != nil && ctx.Mailbox.Name() == mbox.Name() {
-		status, err := mbox.Status([]string{imap.MailboxMessages})
+		status, err := mbox.Status([]imap.StatusItem{imap.StatusMessages})
 		if err != nil {
 			return err
 		}
+		status.Flags = nil
+		status.PermanentFlags = nil
+		status.UnseenSeqNum = 0
 
 		res := &responses.Select{Mailbox: status}
 		if err := conn.WriteResp(res); err != nil {

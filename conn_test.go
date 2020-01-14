@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/emersion/go-imap"
+	"github.com/mailgun/go-imap"
 )
 
 func TestNewConn(t *testing.T) {
@@ -81,6 +81,7 @@ func TestConn_Upgrade(t *testing.T) {
 	began := make(chan struct{})
 	go ic.Upgrade(func(conn net.Conn) (net.Conn, error) {
 		began <- struct{}{}
+		ic.WaitReady()
 		return &upgraded{conn}, nil
 	})
 	<-began

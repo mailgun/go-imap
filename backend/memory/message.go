@@ -1,12 +1,15 @@
 package memory
 
 import (
+	"bufio"
 	"bytes"
+	"io"
 	"time"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/backend/backendutil"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/backend/backendutil"
 	"github.com/emersion/go-message"
+	"github.com/emersion/go-message/textproto"
 )
 
 type Message struct {
@@ -21,32 +24,43 @@ func (m *Message) entity() (*message.Entity, error) {
 	return message.Read(bytes.NewReader(m.Body))
 }
 
-func (m *Message) Fetch(seqNum uint32, items []string) (*imap.Message, error) {
+func (m *Message) headerAndBody() (textproto.Header, io.Reader, error) {
+	body := bufio.NewReader(bytes.NewReader(m.Body))
+	hdr, err := textproto.ReadHeader(body)
+	return hdr, body, err
+}
+
+func (m *Message) Fetch(seqNum uint32, items []imap.FetchItem) (*imap.Message, error) {
 	fetched := imap.NewMessage(seqNum, items)
 	for _, item := range items {
 		switch item {
-		case imap.EnvelopeMsgAttr:
-			e, _ := m.entity()
-			fetched.Envelope, _ = backendutil.FetchEnvelope(e.Header)
-		case imap.BodyMsgAttr, imap.BodyStructureMsgAttr:
-			e, _ := m.entity()
-			fetched.BodyStructure, _ = backendutil.FetchBodyStructure(e, item == imap.BodyStructureMsgAttr)
-		case imap.FlagsMsgAttr:
+		case imap.FetchEnvelope:
+			hdr, _, _ := m.headerAndBody()
+			fetched.Envelope, _ = backendutil.FetchEnvelope(hdr)
+		case imap.FetchBody, imap.FetchBodyStructure:
+			hdr, body, _ := m.headerAndBody()
+			fetched.BodyStructure, _ = backendutil.FetchBodyStructure(hdr, body, item == imap.FetchBodyStructure)
+		case imap.FetchFlags:
 			fetched.Flags = m.Flags
-		case imap.InternalDateMsgAttr:
+		case imap.FetchInternalDate:
 			fetched.InternalDate = m.Date
-		case imap.SizeMsgAttr:
+		case imap.FetchRFC822Size:
 			fetched.Size = m.Size
-		case imap.UidMsgAttr:
+		case imap.FetchUid:
 			fetched.Uid = m.Uid
 		default:
-			section, err := imap.NewBodySectionName(item)
+			section, err := imap.ParseBodySectionName(item)
 			if err != nil {
 				break
 			}
 
-			e, _ := m.entity()
-			l, _ := backendutil.FetchBodySection(e, section)
+			body := bufio.NewReader(bytes.NewReader(m.Body))
+			hdr, err := textproto.ReadHeader(body)
+			if err != nil {
+				return nil, err
+			}
+
+			l, _ := backendutil.FetchBodySection(hdr, body, section)
 			fetched.Body[section] = l
 		}
 	}
@@ -55,16 +69,6 @@ func (m *Message) Fetch(seqNum uint32, items []string) (*imap.Message, error) {
 }
 
 func (m *Message) Match(seqNum uint32, c *imap.SearchCriteria) (bool, error) {
-	if !backendutil.MatchSeqNumAndUid(seqNum, m.Uid, c) {
-		return false, nil
-	}
-	if !backendutil.MatchDate(m.Date, c) {
-		return false, nil
-	}
-	if !backendutil.MatchFlags(m.Flags, c) {
-		return false, nil
-	}
-
 	e, _ := m.entity()
-	return backendutil.Match(e, c)
+	return backendutil.Match(e, seqNum, m.Uid, m.Date, m.Flags, c)
 }

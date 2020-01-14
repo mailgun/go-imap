@@ -5,10 +5,9 @@ import (
 	"errors"
 	"net"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/commands"
-	"github.com/emersion/go-imap/responses"
 	"github.com/emersion/go-sasl"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/commands"
 )
 
 // IMAP errors in Not Authenticated state.
@@ -36,7 +35,7 @@ func (cmd *StartTLS) Handle(conn Conn) error {
 	// Send an OK status response to let the client know that the TLS handshake
 	// can begin
 	return ErrStatusResp(&imap.StatusResp{
-		Type: imap.StatusOk,
+		Type: imap.StatusRespOk,
 		Info: "Begin TLS negotiation now",
 	})
 }
@@ -45,8 +44,9 @@ func (cmd *StartTLS) Upgrade(conn Conn) error {
 	tlsConfig := conn.Server().TLSConfig
 
 	var tlsConn *tls.Conn
-	err := conn.Upgrade(func(conn net.Conn) (net.Conn, error) {
-		tlsConn = tls.Server(conn, tlsConfig)
+	err := conn.Upgrade(func(sock net.Conn) (net.Conn, error) {
+		conn.WaitReady()
+		tlsConn = tls.Server(sock, tlsConfig)
 		err := tlsConn.Handshake()
 		return tlsConn, err
 	})
@@ -56,15 +56,20 @@ func (cmd *StartTLS) Upgrade(conn Conn) error {
 
 	conn.setTLSConn(tlsConn)
 
-	res := &responses.Capability{Caps: conn.Capabilities()}
-	return conn.WriteResp(res)
+	return nil
 }
 
 func afterAuthStatus(conn Conn) error {
+	caps := conn.Capabilities()
+	capAtoms := make([]interface{}, 0, len(caps))
+	for _, cap := range caps {
+		capAtoms = append(capAtoms, imap.RawString(cap))
+	}
+
 	return ErrStatusResp(&imap.StatusResp{
-		Type:      imap.StatusOk,
+		Type:      imap.StatusRespOk,
 		Code:      imap.CodeCapability,
-		Arguments: imap.FormatStringList(conn.Capabilities()),
+		Arguments: capAtoms,
 	})
 }
 
@@ -90,7 +95,7 @@ func (cmd *Login) Handle(conn Conn) error {
 		return ErrAuthDisabled
 	}
 
-	user, err := conn.Server().Backend.Login(cmd.Username, cmd.Password)
+	user, err := conn.Server().Backend.Login(conn.Info(), cmd.Username, cmd.Password)
 	if err != nil {
 		return err
 	}

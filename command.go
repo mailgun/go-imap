@@ -5,38 +5,6 @@ import (
 	"strings"
 )
 
-// IMAP4rev1 commands.
-const (
-	Capability string = "CAPABILITY"
-	Noop              = "NOOP"
-	Logout            = "LOGOUT"
-	StartTLS          = "STARTTLS"
-
-	Authenticate = "AUTHENTICATE"
-	Login        = "LOGIN"
-
-	Select      = "SELECT"
-	Examine     = "EXAMINE"
-	Create      = "CREATE"
-	Delete      = "DELETE"
-	Rename      = "RENAME"
-	Subscribe   = "SUBSCRIBE"
-	Unsubscribe = "UNSUBSCRIBE"
-	List        = "LIST"
-	Lsub        = "LSUB"
-	Status      = "STATUS"
-	Append      = "APPEND"
-
-	Check   = "CHECK"
-	Close   = "CLOSE"
-	Expunge = "EXPUNGE"
-	Search  = "SEARCH"
-	Fetch   = "FETCH"
-	Store   = "STORE"
-	Copy    = "COPY"
-	Uid     = "UID"
-)
-
 // A value that can be converted to a command.
 type Commander interface {
 	Command() *Command
@@ -64,7 +32,7 @@ func (cmd *Command) WriteTo(w *Writer) error {
 		tag = "*"
 	}
 
-	fields := []interface{}{tag, cmd.Name}
+	fields := []interface{}{RawString(tag), RawString(cmd.Name)}
 	fields = append(fields, cmd.Arguments...)
 	return w.writeLine(fields...)
 }

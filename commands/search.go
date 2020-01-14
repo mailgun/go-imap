@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/emersion/go-imap"
+	"github.com/mailgun/go-imap"
 )
 
 // Search is a SEARCH command, as defined in RFC 3501 section 6.4.4.
@@ -17,12 +17,12 @@ type Search struct {
 func (cmd *Search) Command() *imap.Command {
 	var args []interface{}
 	if cmd.Charset != "" {
-		args = append(args, "CHARSET", cmd.Charset)
+		args = append(args, imap.RawString("CHARSET"), imap.RawString(cmd.Charset))
 	}
 	args = append(args, cmd.Criteria.Format()...)
 
 	return &imap.Command{
-		Name:      imap.Search,
+		Name:      "SEARCH",
 		Arguments: args,
 	}
 }

@@ -1,13 +1,15 @@
 package client_test
 
 import (
+	"bytes"
 	"crypto/tls"
 	"io/ioutil"
 	"log"
 	"net/mail"
+	"time"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/client"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/client"
 )
 
 func ExampleClient() {
@@ -32,7 +34,7 @@ func ExampleClient() {
 	// List mailboxes
 	mailboxes := make(chan *imap.MailboxInfo, 10)
 	done := make(chan error, 1)
-	go func () {
+	go func() {
 		done <- c.List("", "*", mailboxes)
 	}()
 
@@ -61,11 +63,12 @@ func ExampleClient() {
 	}
 	seqset := new(imap.SeqSet)
 	seqset.AddRange(from, to)
+	items := []imap.FetchItem{imap.FetchEnvelope}
 
 	messages := make(chan *imap.Message, 10)
 	done = make(chan error, 1)
 	go func() {
-		done <- c.Fetch(seqset, []string{imap.EnvelopeMsgAttr}, messages)
+		done <- c.Fetch(seqset, items, messages)
 	}()
 
 	log.Println("Last 4 messages:")
@@ -98,17 +101,18 @@ func ExampleClient_Fetch() {
 	seqset.AddRange(mbox.Messages, mbox.Messages)
 
 	// Get the whole message body
-	attrs := []string{"BODY[]"}
+	section := &imap.BodySectionName{}
+	items := []imap.FetchItem{section.FetchItem()}
 
 	messages := make(chan *imap.Message, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- c.Fetch(seqset, attrs, messages)
+		done <- c.Fetch(seqset, items, messages)
 	}()
 
 	log.Println("Last message:")
 	msg := <-messages
-	r := msg.GetBody("BODY[]")
+	r := msg.GetBody(section)
 	if r == nil {
 		log.Fatal("Server didn't returned message body")
 	}
@@ -135,6 +139,25 @@ func ExampleClient_Fetch() {
 	log.Println(body)
 }
 
+func ExampleClient_Append() {
+	// Let's assume c is a client
+	var c *client.Client
+
+	// Write the message to a buffer
+	var b bytes.Buffer
+	b.WriteString("From: <root@nsa.gov>\r\n")
+	b.WriteString("To: <root@gchq.gov.uk>\r\n")
+	b.WriteString("Subject: Hey there\r\n")
+	b.WriteString("\r\n")
+	b.WriteString("Hey <3")
+
+	// Append it to INBOX, with two flags
+	flags := []string{imap.FlaggedFlag, "foobar"}
+	if err := c.Append("INBOX", flags, time.Now(), &b); err != nil {
+		log.Fatal(err)
+	}
+}
+
 func ExampleClient_Expunge() {
 	// Let's assume c is a client
 	var c *client.Client
@@ -150,12 +173,12 @@ func ExampleClient_Expunge() {
 		log.Fatal("No message in mailbox")
 	}
 	seqset := new(imap.SeqSet)
-	seqset.AddRange(mbox.Messages, mbox.Messages)
+	seqset.AddNum(mbox.Messages)
 
 	// First mark the message as deleted
-	operation := "+FLAGS.SILENT"
+	item := imap.FormatFlagsOp(imap.AddFlags, true)
 	flags := []interface{}{imap.DeletedFlag}
-	if err := c.Store(seqset, operation, flags, nil); err != nil {
+	if err := c.Store(seqset, item, flags, nil); err != nil {
 		log.Fatal(err)
 	}
 
@@ -192,4 +215,69 @@ func ExampleClient_StartTLS() {
 		log.Fatal(err)
 	}
 	log.Println("Logged in")
+}
+
+func ExampleClient_Store() {
+	// Let's assume c is a client
+	var c *client.Client
+
+	// Select INBOX
+	_, err := c.Select("INBOX", false)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Mark message 42 as seen
+	seqSet := new(imap.SeqSet)
+	seqSet.AddNum(42)
+	item := imap.FormatFlagsOp(imap.AddFlags, true)
+	flags := []interface{}{imap.SeenFlag}
+	err = c.Store(seqSet, item, flags, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Message has been marked as seen")
+}
+
+func ExampleClient_Search() {
+	// Let's assume c is a client
+	var c *client.Client
+
+	// Select INBOX
+	_, err := c.Select("INBOX", false)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Set search criteria
+	criteria := imap.NewSearchCriteria()
+	criteria.WithoutFlags = []string{imap.SeenFlag}
+	ids, err := c.Search(criteria)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("IDs found:", ids)
+
+	if len(ids) > 0 {
+		seqset := new(imap.SeqSet)
+		seqset.AddNum(ids...)
+
+		messages := make(chan *imap.Message, 10)
+		done := make(chan error, 1)
+		go func() {
+			done <- c.Fetch(seqset, []imap.FetchItem{imap.FetchEnvelope}, messages)
+		}()
+
+		log.Println("Unseen messages:")
+		for msg := range messages {
+			log.Println("* " + msg.Envelope.Subject)
+		}
+
+		if err := <-done; err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	log.Println("Done!")
 }

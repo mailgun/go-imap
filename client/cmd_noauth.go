@@ -5,9 +5,9 @@ import (
 	"errors"
 	"net"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/commands"
-	"github.com/emersion/go-imap/responses"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/commands"
+	"github.com/mailgun/go-imap/responses"
 	"github.com/emersion/go-sasl"
 )
 
@@ -26,7 +26,7 @@ var (
 
 // SupportStartTLS checks if the server supports STARTTLS.
 func (c *Client) SupportStartTLS() (bool, error) {
-	return c.Support(imap.StartTLS)
+	return c.Support("STARTTLS")
 }
 
 // StartTLS starts TLS negotiation.
@@ -35,24 +35,36 @@ func (c *Client) StartTLS(tlsConfig *tls.Config) error {
 		return ErrTLSAlreadyEnabled
 	}
 
+	if tlsConfig == nil {
+		tlsConfig = new(tls.Config)
+	}
+	if tlsConfig.ServerName == "" {
+		tlsConfig = tlsConfig.Clone()
+		tlsConfig.ServerName = c.serverName
+	}
+
 	cmd := new(commands.StartTLS)
 
 	err := c.Upgrade(func(conn net.Conn) (net.Conn, error) {
+		// Flag connection as in upgrading
+		c.upgrading = true
 		if status, err := c.execute(cmd, nil); err != nil {
 			return nil, err
 		} else if err := status.Err(); err != nil {
 			return nil, err
 		}
 
+		// Wait for reader to block.
+		c.conn.WaitReady()
 		tlsConn := tls.Client(conn, tlsConfig)
 		if err := tlsConn.Handshake(); err != nil {
 			return nil, err
 		}
 
 		// Capabilities change when TLS is enabled
-		c.capsLocker.Lock()
+		c.locker.Lock()
 		c.caps = nil
-		c.capsLocker.Unlock()
+		c.locker.Unlock()
 
 		return tlsConn, nil
 	})
@@ -73,7 +85,7 @@ func (c *Client) SupportAuth(mech string) (bool, error) {
 // server supports the requested authentication mechanism, it performs an
 // authentication protocol exchange to authenticate and identify the client.
 func (c *Client) Authenticate(auth sasl.Client) error {
-	if c.State != imap.NotAuthenticatedState {
+	if c.State() != imap.NotAuthenticatedState {
 		return ErrAlreadyLoggedIn
 	}
 
@@ -86,10 +98,21 @@ func (c *Client) Authenticate(auth sasl.Client) error {
 		Mechanism: mech,
 	}
 
+	irOk, err := c.Support("SASL-IR")
+	if err != nil {
+		return err
+	}
+	if irOk {
+		cmd.InitialResponse = ir
+	}
+
 	res := &responses.Authenticate{
 		Mechanism:       auth,
 		InitialResponse: ir,
-		Writer:          c.Writer(),
+		RepliesCh:       make(chan []byte, 10),
+	}
+	if irOk {
+		res.InitialResponse = nil
 	}
 
 	status, err := c.execute(cmd, res)
@@ -100,14 +123,12 @@ func (c *Client) Authenticate(auth sasl.Client) error {
 		return err
 	}
 
-	c.State = imap.AuthenticatedState
+	c.locker.Lock()
+	c.state = imap.AuthenticatedState
+	c.caps = nil // Capabilities change when user is logged in
+	c.locker.Unlock()
 
-	// Capabilities change when user is logged in
-	c.capsLocker.Lock()
-	c.caps = nil
-	c.capsLocker.Unlock()
-
-	if status.Code == imap.Capability {
+	if status.Code == "CAPABILITY" {
 		c.gotStatusCaps(status.Arguments)
 	}
 
@@ -117,13 +138,13 @@ func (c *Client) Authenticate(auth sasl.Client) error {
 // Login identifies the client to the server and carries the plaintext password
 // authenticating this user.
 func (c *Client) Login(username, password string) error {
-	if c.State != imap.NotAuthenticatedState {
+	if state := c.State(); state == imap.AuthenticatedState || state == imap.SelectedState {
 		return ErrAlreadyLoggedIn
 	}
 
-	c.capsLocker.Lock()
+	c.locker.Lock()
 	loginDisabled := c.caps != nil && c.caps["LOGINDISABLED"]
-	c.capsLocker.Unlock()
+	c.locker.Unlock()
 	if loginDisabled {
 		return ErrLoginDisabled
 	}
@@ -141,11 +162,10 @@ func (c *Client) Login(username, password string) error {
 		return err
 	}
 
-	c.State = imap.AuthenticatedState
-
-	c.capsLocker.Lock()
-	c.caps = nil
-	c.capsLocker.Unlock()
+	c.locker.Lock()
+	c.state = imap.AuthenticatedState
+	c.caps = nil // Capabilities change when user is logged in
+	c.locker.Unlock()
 
 	if status.Code == "CAPABILITY" {
 		c.gotStatusCaps(status.Arguments)

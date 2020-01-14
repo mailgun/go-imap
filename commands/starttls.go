@@ -1,7 +1,7 @@
 package commands
 
 import (
-	"github.com/emersion/go-imap"
+	"github.com/mailgun/go-imap"
 )
 
 // StartTLS is a STARTTLS command, as defined in RFC 3501 section 6.2.1.
@@ -9,7 +9,7 @@ type StartTLS struct{}
 
 func (cmd *StartTLS) Command() *imap.Command {
 	return &imap.Command{
-		Name: imap.StartTLS,
+		Name: "STARTTLS",
 	}
 }
 

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/internal"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/internal"
 )
 
 func TestCanonicalMailboxName(t *testing.T) {
@@ -111,11 +111,11 @@ func TestMailboxInfo_Match(t *testing.T) {
 }
 
 func TestNewMailboxStatus(t *testing.T) {
-	status := imap.NewMailboxStatus("INBOX", []string{"MESSAGES", "UNSEEN"})
+	status := imap.NewMailboxStatus("INBOX", []imap.StatusItem{imap.StatusMessages, imap.StatusUnseen})
 
 	expected := &imap.MailboxStatus{
 		Name:  "INBOX",
-		Items: map[string]interface{}{"MESSAGES": nil, "UNSEEN": nil},
+		Items: map[imap.StatusItem]interface{}{imap.StatusMessages: nil, imap.StatusUnseen: nil},
 	}
 
 	if !reflect.DeepEqual(expected, status) {
@@ -136,12 +136,12 @@ var mailboxStatusTests = [...]struct {
 			"UIDVALIDITY", uint32(4242),
 		},
 		status: &imap.MailboxStatus{
-			Items: map[string]interface{}{
-				"MESSAGES":    nil,
-				"RECENT":      nil,
-				"UNSEEN":      nil,
-				"UIDNEXT":     nil,
-				"UIDVALIDITY": nil,
+			Items: map[imap.StatusItem]interface{}{
+				imap.StatusMessages:    nil,
+				imap.StatusRecent:      nil,
+				imap.StatusUnseen:      nil,
+				imap.StatusUidNext:     nil,
+				imap.StatusUidValidity: nil,
 			},
 			Messages:    42,
 			Recent:      1,
@@ -169,11 +169,22 @@ func TestMailboxStatus_Parse(t *testing.T) {
 func TestMailboxStatus_Format(t *testing.T) {
 	for i, test := range mailboxStatusTests {
 		fields := test.status.Format()
-		sort.Sort(internal.MapListSorter(fields))
+
+		// MapListSorter does not know about RawString and will panic.
+		stringFields := make([]interface{}, 0, len(fields))
+		for _, field := range fields {
+			if s, ok := field.(imap.RawString); ok {
+				stringFields = append(stringFields, string(s))
+			} else {
+				stringFields = append(stringFields, field)
+			}
+		}
+
+		sort.Sort(internal.MapListSorter(stringFields))
 
 		sort.Sort(internal.MapListSorter(test.fields))
 
-		if !reflect.DeepEqual(fields, test.fields) {
+		if !reflect.DeepEqual(stringFields, test.fields) {
 			t.Errorf("Invalid mailbox status fields for #%v: got \n%+v\n but expected \n%+v", i, fields, test.fields)
 		}
 	}

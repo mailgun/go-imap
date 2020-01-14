@@ -5,8 +5,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/emersion/go-imap/backend/memory"
-	"github.com/emersion/go-imap/server"
+	"github.com/mailgun/go-imap/backend/memory"
+	"github.com/mailgun/go-imap/server"
 )
 
 func testServer(t *testing.T) (s *server.Server, conn net.Conn) {
@@ -18,9 +18,9 @@ func testServer(t *testing.T) (s *server.Server, conn net.Conn) {
 	}
 
 	s = server.New(bkd)
-	go s.Serve(l)
-
 	s.AllowInsecureAuth = true
+
+	go s.Serve(l)
 
 	conn, err = net.Dial("tcp", l.Addr().String())
 	if err != nil {
@@ -32,15 +32,15 @@ func testServer(t *testing.T) (s *server.Server, conn net.Conn) {
 
 func TestServer_greeting(t *testing.T) {
 	s, conn := testServer(t)
-	defer conn.Close()
 	defer s.Close()
+	defer conn.Close()
 
 	scanner := bufio.NewScanner(conn)
 
 	scanner.Scan() // Wait for greeting
 	greeting := scanner.Text()
 
-	if greeting != "* OK [CAPABILITY IMAP4rev1 AUTH=PLAIN] IMAP4rev1 Service Ready" {
+	if greeting != "* OK [CAPABILITY IMAP4rev1 LITERAL+ SASL-IR AUTH=PLAIN] IMAP4rev1 Service Ready" {
 		t.Fatal("Bad greeting:", greeting)
 	}
 }

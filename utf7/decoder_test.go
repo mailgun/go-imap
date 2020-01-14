@@ -3,7 +3,7 @@ package utf7_test
 import (
 	"testing"
 
-	"github.com/emersion/go-imap/utf7"
+	"github.com/mailgun/go-imap/utf7"
 )
 
 var decode = []struct {
@@ -88,8 +88,10 @@ var decode = []struct {
 }
 
 func TestDecoder(t *testing.T) {
+	dec := utf7.Encoding.NewDecoder()
+
 	for _, test := range decode {
-		out, err := utf7.Decoder.String(test.in)
+		out, err := dec.String(test.in)
 		if out != test.out {
 			t.Errorf("UTF7Decode(%+q) expected %+q; got %+q", test.in, test.out, out)
 		}

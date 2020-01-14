@@ -1,10 +1,10 @@
 package server
 
 import (
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/backend"
-	"github.com/emersion/go-imap/commands"
-	"github.com/emersion/go-imap/responses"
+	"github.com/mailgun/go-imap"
+	"github.com/mailgun/go-imap/backend"
+	"github.com/mailgun/go-imap/commands"
+	"github.com/mailgun/go-imap/responses"
 )
 
 type Capability struct {
@@ -24,7 +24,7 @@ func (cmd *Noop) Handle(conn Conn) error {
 	ctx := conn.Context()
 	if ctx.Mailbox != nil {
 		// If a mailbox is selected, NOOP can be used to poll for server updates
-		if mbox, ok := ctx.Mailbox.(backend.UpdaterMailbox); ok {
+		if mbox, ok := ctx.Mailbox.(backend.MailboxPoller); ok {
 			return mbox.Poll()
 		}
 	}
@@ -38,7 +38,7 @@ type Logout struct {
 
 func (cmd *Logout) Handle(conn Conn) error {
 	res := &imap.StatusResp{
-		Type: imap.StatusBye,
+		Type: imap.StatusRespBye,
 		Info: "Closing connection",
 	}
 

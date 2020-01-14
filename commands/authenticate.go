@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/emersion/go-imap"
+	"github.com/mailgun/go-imap"
 	"github.com/emersion/go-sasl"
 )
 
@@ -22,13 +22,27 @@ type AuthenticateConn interface {
 // Authenticate is an AUTHENTICATE command, as defined in RFC 3501 section
 // 6.2.2.
 type Authenticate struct {
-	Mechanism string
+	Mechanism       string
+	InitialResponse []byte
 }
 
 func (cmd *Authenticate) Command() *imap.Command {
+	args := []interface{}{imap.RawString(cmd.Mechanism)}
+	if cmd.InitialResponse != nil {
+		var encodedResponse string
+		if len(cmd.InitialResponse) == 0 {
+			// Empty initial response should be encoded as "=", not empty
+			// string.
+			encodedResponse = "="
+		} else {
+			encodedResponse = base64.StdEncoding.EncodeToString(cmd.InitialResponse)
+		}
+
+		args = append(args, imap.RawString(encodedResponse))
+	}
 	return &imap.Command{
-		Name:      imap.Authenticate,
-		Arguments: []interface{}{cmd.Mechanism},
+		Name:      "AUTHENTICATE",
+		Arguments: args,
 	}
 }
 
@@ -41,8 +55,27 @@ func (cmd *Authenticate) Parse(fields []interface{}) error {
 	if cmd.Mechanism, ok = fields[0].(string); !ok {
 		return errors.New("Mechanism must be a string")
 	}
-
 	cmd.Mechanism = strings.ToUpper(cmd.Mechanism)
+
+	if len(fields) != 2 {
+		return nil
+	}
+
+	encodedResponse, ok := fields[1].(string)
+	if !ok {
+		return errors.New("Initial response must be a string")
+	}
+	if encodedResponse == "=" {
+		cmd.InitialResponse = []byte{}
+		return nil
+	}
+
+	var err error
+	cmd.InitialResponse, err = base64.StdEncoding.DecodeString(encodedResponse)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -54,7 +87,7 @@ func (cmd *Authenticate) Handle(mechanisms map[string]sasl.Server, conn Authenti
 
 	scanner := bufio.NewScanner(conn)
 
-	var response []byte
+	response := cmd.InitialResponse
 	for {
 		challenge, done, err := sasl.Next(response)
 		if err != nil || done {
@@ -62,14 +95,16 @@ func (cmd *Authenticate) Handle(mechanisms map[string]sasl.Server, conn Authenti
 		}
 
 		encoded := base64.StdEncoding.EncodeToString(challenge)
-		cont := &imap.ContinuationResp{Info: encoded}
+		cont := &imap.ContinuationReq{Info: encoded}
 		if err := conn.WriteResp(cont); err != nil {
 			return err
 		}
 
-		scanner.Scan()
-		if err := scanner.Err(); err != nil {
-			return err
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return err
+			}
+			return errors.New("unexpected EOF")
 		}
 
 		encoded = scanner.Text()

@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emersion/go-imap/internal"
+	"github.com/mailgun/go-imap/internal"
 )
 
 func TestStartTLS(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	cert, err := tls.X509KeyPair(internal.LocalhostCert, internal.LocalhostKey)
 	if err != nil {
@@ -30,7 +30,7 @@ func TestStartTLS(t *testing.T) {
 
 	io.WriteString(c, "a001 CAPABILITY\r\n")
 	scanner.Scan()
-	if scanner.Text() != "* CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED" {
+	if scanner.Text() != "* CAPABILITY IMAP4rev1 LITERAL+ SASL-IR STARTTLS LOGINDISABLED" {
 		t.Fatal("Bad CAPABILITY response:", scanner.Text())
 	}
 	scanner.Scan()
@@ -47,18 +47,19 @@ func TestStartTLS(t *testing.T) {
 	if err = sc.Handshake(); err != nil {
 		t.Fatal(err)
 	}
+	io.WriteString(sc, "a001 CAPABILITY\r\n")
 	scanner = bufio.NewScanner(sc)
 
 	scanner.Scan()
-	if scanner.Text() != "* CAPABILITY IMAP4rev1 AUTH=PLAIN" {
+	if scanner.Text() != "* CAPABILITY IMAP4rev1 LITERAL+ SASL-IR AUTH=PLAIN" {
 		t.Fatal("Bad CAPABILITY response:", scanner.Text())
 	}
 }
 
 func TestLogin_Ok(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 LOGIN username password\r\n")
 
@@ -70,8 +71,8 @@ func TestLogin_Ok(t *testing.T) {
 
 func TestLogin_No(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 LOGIN username wrongpassword\r\n")
 
@@ -83,8 +84,8 @@ func TestLogin_No(t *testing.T) {
 
 func TestAuthenticate_Plain_Ok(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 AUTHENTICATE PLAIN\r\n")
 
@@ -102,10 +103,23 @@ func TestAuthenticate_Plain_Ok(t *testing.T) {
 	}
 }
 
+func TestAuthenticate_Plain_InitialResponse(t *testing.T) {
+	s, c, scanner := testServerGreeted(t)
+	defer s.Close()
+	defer c.Close()
+
+	io.WriteString(c, "a001 AUTHENTICATE PLAIN AHVzZXJuYW1lAHBhc3N3b3Jk\r\n")
+
+	scanner.Scan()
+	if !strings.HasPrefix(scanner.Text(), "a001 OK ") {
+		t.Fatal("Bad status response:", scanner.Text())
+	}
+}
+
 func TestAuthenticate_Plain_No(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 AUTHENTICATE PLAIN\r\n")
 
@@ -125,8 +139,8 @@ func TestAuthenticate_Plain_No(t *testing.T) {
 
 func TestAuthenticate_No(t *testing.T) {
 	s, c, scanner := testServerGreeted(t)
-	defer c.Close()
 	defer s.Close()
+	defer c.Close()
 
 	io.WriteString(c, "a001 AUTHENTICATE XIDONTEXIST\r\n")
 
