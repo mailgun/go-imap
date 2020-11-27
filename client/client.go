@@ -81,9 +81,12 @@ func (c *Client) read(greeted chan struct{}) error {
 
 	first := true
 	for {
+		c.stateLocker.Lock()
 		if c.State == imap.LogoutState {
+			c.stateLocker.Unlock()
 			return nil
 		}
+		c.stateLocker.Unlock()
 
 		c.conn.Wait()
 
@@ -98,9 +101,12 @@ func (c *Client) read(greeted chan struct{}) error {
 		}
 
 		res, err := imap.ReadResp(c.conn.Reader)
+		c.stateLocker.Lock()
 		if err == io.EOF || c.State == imap.LogoutState {
+			c.stateLocker.Unlock()
 			return nil
 		}
+		c.stateLocker.Unlock()
 		if err != nil {
 			c.ErrorLog.Println("error reading response:", err)
 			if imap.IsParseError(err) {
