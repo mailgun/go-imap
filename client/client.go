@@ -23,10 +23,11 @@ type Client struct {
 	conn  *imap.Conn
 	isTLS bool
 
-	handles   imap.RespHandler
-	handler   *imap.MultiRespHandler
-	greeted   chan struct{}
-	loggedOut chan struct{}
+	handles     imap.RespHandler
+	handler     *imap.MultiRespHandler
+	greeted     chan struct{}
+	greetedFlag bool
+	loggedOut   chan struct{}
 
 	// The cached server capabilities.
 	caps map[string]bool
@@ -71,9 +72,9 @@ func (c *Client) read(greeted chan struct{}) error {
 	defer func() {
 		// Ensure we close the greeted channel. New may be waiting on an indication
 		// that we've seen the greeting.
-		if c.greeted != nil {
+		if !c.greetedFlag {
 			close(c.greeted)
-			c.greeted = nil
+			c.greetedFlag = true
 		}
 		close(c.handles)
 		close(c.loggedOut)
@@ -93,13 +94,11 @@ func (c *Client) read(greeted chan struct{}) error {
 		if first {
 			first = false
 		} else {
-			c.stateLocker.Lock()
 			<-greeted
-			if c.greeted != nil {
+			if !c.greetedFlag {
 				close(c.greeted)
-				c.greeted = nil
+				c.greetedFlag = true
 			}
-			c.stateLocker.Unlock()
 		}
 
 		res, err := imap.ReadResp(c.conn.Reader)
