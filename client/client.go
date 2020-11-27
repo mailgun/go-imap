@@ -93,11 +93,13 @@ func (c *Client) read(greeted chan struct{}) error {
 		if first {
 			first = false
 		} else {
+			c.stateLocker.Lock()
 			<-greeted
 			if c.greeted != nil {
 				close(c.greeted)
 				c.greeted = nil
 			}
+			c.stateLocker.Unlock()
 		}
 
 		res, err := imap.ReadResp(c.conn.Reader)
