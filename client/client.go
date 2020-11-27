@@ -34,7 +34,9 @@ type Client struct {
 	capsLocker sync.Mutex
 
 	// The current connection state.
-	State imap.ConnState
+	State       imap.ConnState
+	stateLocker sync.Mutex
+
 	// The selected mailbox, if there is one.
 	Mailbox *imap.MailboxStatus
 
@@ -270,7 +272,7 @@ func (c *Client) handleUnilateral() {
 				break
 			}
 			h.Accept()
-
+			c.stateLocker.Lock()
 			if greeted != nil {
 				switch res.Type {
 				case imap.StatusPreauth:
@@ -314,6 +316,7 @@ func (c *Client) handleUnilateral() {
 					c.Byes <- res
 				}
 			}
+			c.stateLocker.Unlock()
 		case *imap.Resp:
 			if len(res.Fields) < 2 {
 				h.Reject()
