@@ -100,7 +100,9 @@ func (c *Client) Authenticate(auth sasl.Client) error {
 		return err
 	}
 
+	c.stateLocker.Lock()
 	c.State = imap.AuthenticatedState
+	c.stateLocker.Unlock()
 
 	// Capabilities change when user is logged in
 	c.capsLocker.Lock()
@@ -141,7 +143,9 @@ func (c *Client) Login(username, password string) error {
 		return err
 	}
 
+	c.stateLocker.Lock()
 	c.State = imap.AuthenticatedState
+	c.stateLocker.Unlock()
 
 	c.capsLocker.Lock()
 	c.caps = nil
