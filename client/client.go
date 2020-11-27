@@ -345,9 +345,11 @@ func (c *Client) handleUnilateral() {
 			}
 			h.Accept()
 
+			c.stateLocker.Lock()
 			switch name {
 			case "EXISTS":
 				if c.Mailbox == nil {
+					c.stateLocker.Unlock()
 					break
 				}
 
@@ -363,6 +365,7 @@ func (c *Client) handleUnilateral() {
 				}
 			case "RECENT":
 				if c.Mailbox == nil {
+					c.stateLocker.Unlock()
 					break
 				}
 
@@ -390,6 +393,7 @@ func (c *Client) handleUnilateral() {
 					SeqNum: seqNum,
 				}
 				if err := msg.Parse(fields); err != nil {
+					c.stateLocker.Unlock()
 					break
 				}
 
@@ -397,6 +401,7 @@ func (c *Client) handleUnilateral() {
 					c.MessageUpdates <- msg
 				}
 			}
+			c.stateLocker.Unlock()
 		default:
 			h.Reject()
 		}
