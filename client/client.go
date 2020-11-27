@@ -23,10 +23,11 @@ type Client struct {
 	conn  *imap.Conn
 	isTLS bool
 
-	handles   imap.RespHandler
-	handler   *imap.MultiRespHandler
-	greeted   chan struct{}
-	loggedOut chan struct{}
+	handles     imap.RespHandler
+	handler     *imap.MultiRespHandler
+	greeted     chan struct{}
+	greetedFlag bool
+	loggedOut   chan struct{}
 
 	// The cached server capabilities.
 	caps map[string]bool
@@ -34,7 +35,9 @@ type Client struct {
 	capsLocker sync.Mutex
 
 	// The current connection state.
-	State imap.ConnState
+	State       imap.ConnState
+	stateLocker sync.Mutex
+
 	// The selected mailbox, if there is one.
 	Mailbox *imap.MailboxStatus
 
@@ -69,9 +72,9 @@ func (c *Client) read(greeted chan struct{}) error {
 	defer func() {
 		// Ensure we close the greeted channel. New may be waiting on an indication
 		// that we've seen the greeting.
-		if c.greeted != nil {
+		if !c.greetedFlag {
 			close(c.greeted)
-			c.greeted = nil
+			c.greetedFlag = true
 		}
 		close(c.handles)
 		close(c.loggedOut)
@@ -79,9 +82,12 @@ func (c *Client) read(greeted chan struct{}) error {
 
 	first := true
 	for {
+		c.stateLocker.Lock()
 		if c.State == imap.LogoutState {
+			c.stateLocker.Unlock()
 			return nil
 		}
+		c.stateLocker.Unlock()
 
 		c.conn.Wait()
 
@@ -89,16 +95,19 @@ func (c *Client) read(greeted chan struct{}) error {
 			first = false
 		} else {
 			<-greeted
-			if c.greeted != nil {
+			if !c.greetedFlag {
 				close(c.greeted)
-				c.greeted = nil
+				c.greetedFlag = true
 			}
 		}
 
 		res, err := imap.ReadResp(c.conn.Reader)
+		c.stateLocker.Lock()
 		if err == io.EOF || c.State == imap.LogoutState {
+			c.stateLocker.Unlock()
 			return nil
 		}
+		c.stateLocker.Unlock()
 		if err != nil {
 			c.ErrorLog.Println("error reading response:", err)
 			if imap.IsParseError(err) {
@@ -270,7 +279,7 @@ func (c *Client) handleUnilateral() {
 				break
 			}
 			h.Accept()
-
+			c.stateLocker.Lock()
 			if greeted != nil {
 				switch res.Type {
 				case imap.StatusPreauth:
@@ -314,6 +323,7 @@ func (c *Client) handleUnilateral() {
 					c.Byes <- res
 				}
 			}
+			c.stateLocker.Unlock()
 		case *imap.Resp:
 			if len(res.Fields) < 2 {
 				h.Reject()
@@ -335,9 +345,11 @@ func (c *Client) handleUnilateral() {
 			}
 			h.Accept()
 
+			c.stateLocker.Lock()
 			switch name {
 			case "EXISTS":
 				if c.Mailbox == nil {
+					c.stateLocker.Unlock()
 					break
 				}
 
@@ -353,6 +365,7 @@ func (c *Client) handleUnilateral() {
 				}
 			case "RECENT":
 				if c.Mailbox == nil {
+					c.stateLocker.Unlock()
 					break
 				}
 
@@ -380,6 +393,7 @@ func (c *Client) handleUnilateral() {
 					SeqNum: seqNum,
 				}
 				if err := msg.Parse(fields); err != nil {
+					c.stateLocker.Unlock()
 					break
 				}
 
@@ -387,6 +401,7 @@ func (c *Client) handleUnilateral() {
 					c.MessageUpdates <- msg
 				}
 			}
+			c.stateLocker.Unlock()
 		default:
 			h.Reject()
 		}

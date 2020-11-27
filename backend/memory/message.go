@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"time"
 
+	"github.com/emersion/go-message"
 	"github.com/mailgun/go-imap"
 	"github.com/mailgun/go-imap/backend/backendutil"
-	"github.com/emersion/go-message"
 )
 
 type Message struct {

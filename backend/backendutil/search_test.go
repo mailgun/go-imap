@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mailgun/go-imap"
 	"github.com/emersion/go-message"
+	"github.com/mailgun/go-imap"
 )
 
 var matchTests = []struct {

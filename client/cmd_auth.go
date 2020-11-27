@@ -44,7 +44,9 @@ func (c *Client) Select(name string, readOnly bool) (*imap.MailboxStatus, error)
 	}
 
 	mbox.ReadOnly = (status.Code == imap.CodeReadOnly)
+	c.stateLocker.Lock()
 	c.State = imap.SelectedState
+	c.stateLocker.Unlock()
 	return mbox, nil
 }
 

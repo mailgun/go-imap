@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mailgun/go-imap"
 	"github.com/emersion/go-message"
 	"github.com/emersion/go-message/mail"
+	"github.com/mailgun/go-imap"
 )
 
 func matchString(s, substr string) bool {

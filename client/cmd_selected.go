@@ -48,8 +48,10 @@ func (c *Client) Close() error {
 		return err
 	}
 
+	c.stateLocker.Lock()
 	c.State = imap.AuthenticatedState
 	c.Mailbox = nil
+	c.stateLocker.Unlock()
 	return nil
 }
 

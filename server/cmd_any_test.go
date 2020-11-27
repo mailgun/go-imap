@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mailgun/go-imap/server"
 	"github.com/emersion/go-sasl"
+	"github.com/mailgun/go-imap/server"
 )
 
 func testServerGreeted(t *testing.T) (s *server.Server, c net.Conn, scanner *bufio.Scanner) {
